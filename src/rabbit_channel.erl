@@ -50,7 +50,7 @@
 -include("rabbit_framing.hrl").
 -include("rabbit.hrl").
 
--behaviour(gen_server2).
+-behaviour(gen_server3).
 
 -export([start_link/11, do/2, do/3, do_flow/3, flush/1, shutdown/1]).
 -export([send_command/2, deliver/4, deliver_reply/2,
@@ -231,7 +231,7 @@
 
 start_link(Channel, ReaderPid, WriterPid, ConnPid, ConnName, Protocol, User,
            VHost, Capabilities, CollectorPid, Limiter) ->
-    gen_server2:start_link(
+    gen_server3:start_link(
       ?MODULE, [Channel, ReaderPid, WriterPid, ConnPid, ConnName, Protocol,
                 User, VHost, Capabilities, CollectorPid, Limiter], []).
 
@@ -239,25 +239,25 @@ do(Pid, Method) ->
     do(Pid, Method, none).
 
 do(Pid, Method, Content) ->
-    gen_server2:cast(Pid, {method, Method, Content, noflow}).
+    gen_server3:cast(Pid, {method, Method, Content, noflow}).
 
 do_flow(Pid, Method, Content) ->
     %% Here we are tracking messages sent by the rabbit_reader
     %% process. We are accessing the rabbit_reader process dictionary.
     credit_flow:send(Pid),
-    gen_server2:cast(Pid, {method, Method, Content, flow}).
+    gen_server3:cast(Pid, {method, Method, Content, flow}).
 
 flush(Pid) ->
-    gen_server2:call(Pid, flush, infinity).
+    gen_server3:call(Pid, flush, infinity).
 
 shutdown(Pid) ->
-    gen_server2:cast(Pid, terminate).
+    gen_server3:cast(Pid, terminate).
 
 send_command(Pid, Msg) ->
-    gen_server2:cast(Pid,  {command, Msg}).
+    gen_server3:cast(Pid,  {command, Msg}).
 
 deliver(Pid, ConsumerTag, AckRequired, Msg) ->
-    gen_server2:cast(Pid, {deliver, ConsumerTag, AckRequired, Msg}).
+    gen_server3:cast(Pid, {deliver, ConsumerTag, AckRequired, Msg}).
 
 deliver_reply(<<"amq.rabbitmq.reply-to.", Rest/binary>>, Delivery) ->
     case decode_fast_reply_to(Rest) of
@@ -272,7 +272,7 @@ deliver_reply(<<"amq.rabbitmq.reply-to.", Rest/binary>>, Delivery) ->
 %% to an arbitrary process and kill it!
 deliver_reply_local(Pid, Key, Delivery) ->
     case pg_local:in_group(rabbit_channels, Pid) of
-        true  -> gen_server2:cast(Pid, {deliver_reply, Key, Delivery});
+        true  -> gen_server3:cast(Pid, {deliver_reply, Key, Delivery});
         false -> ok
     end.
 
@@ -284,7 +284,7 @@ declare_fast_reply_to(<<"amq.rabbitmq.reply-to.", Rest/binary>>) ->
             Msg = {declare_fast_reply_to, Key},
             rabbit_misc:with_exit_handler(
               rabbit_misc:const(not_found),
-              fun() -> gen_server2:call(Pid, Msg, infinity) end);
+              fun() -> gen_server3:call(Pid, Msg, infinity) end);
         error ->
             not_found
     end;
@@ -299,10 +299,10 @@ decode_fast_reply_to(Rest) ->
     end.
 
 send_credit_reply(Pid, Len) ->
-    gen_server2:cast(Pid, {send_credit_reply, Len}).
+    gen_server3:cast(Pid, {send_credit_reply, Len}).
 
 send_drained(Pid, CTagCredit) ->
-    gen_server2:cast(Pid, {send_drained, CTagCredit}).
+    gen_server3:cast(Pid, {send_drained, CTagCredit}).
 
 list() ->
     rabbit_misc:append_rpc_all_nodes(rabbit_mnesia:cluster_nodes(running),
@@ -314,10 +314,10 @@ list_local() ->
 info_keys() -> ?INFO_KEYS.
 
 info(Pid) ->
-    gen_server2:call(Pid, info, infinity).
+    gen_server3:call(Pid, info, infinity).
 
 info(Pid, Items) ->
-    case gen_server2:call(Pid, {info, Items}, infinity) of
+    case gen_server3:call(Pid, {info, Items}, infinity) of
         {ok, Res}      -> Res;
         {error, Error} -> throw(Error)
     end.
@@ -344,21 +344,21 @@ emit_info(PidList, InfoItems, Ref, AggregatorPid) ->
 
 refresh_config_local() ->
     rabbit_misc:upmap(
-      fun (C) -> gen_server2:call(C, refresh_config, infinity) end,
+      fun (C) -> gen_server3:call(C, refresh_config, infinity) end,
       list_local()),
     ok.
 
 refresh_interceptors() ->
     rabbit_misc:upmap(
-      fun (C) -> gen_server2:call(C, refresh_interceptors, ?REFRESH_TIMEOUT) end,
+      fun (C) -> gen_server3:call(C, refresh_interceptors, ?REFRESH_TIMEOUT) end,
       list_local()),
     ok.    
 
 ready_for_close(Pid) ->
-    gen_server2:cast(Pid, ready_for_close).
+    gen_server3:cast(Pid, ready_for_close).
 
 force_event_refresh(Ref) ->
-    [gen_server2:cast(C, {force_event_refresh, Ref}) || C <- list()],
+    [gen_server3:cast(C, {force_event_refresh, Ref}) || C <- list()],
     ok.
 
 %%---------------------------------------------------------------------------

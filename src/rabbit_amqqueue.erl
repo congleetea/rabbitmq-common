@@ -267,7 +267,7 @@ find_durable_queues() ->
 
 recover_durable_queues(QueuesAndRecoveryTerms) ->
     {Results, Failures} =
-        gen_server2:mcall(
+        gen_server3:mcall(
           [{rabbit_amqqueue_sup_sup:start_queue_process(node(), Q, recovery),
             {init, {self(), Terms}}} || {Q, Terms} <- QueuesAndRecoveryTerms]),
     [rabbit_log:error("Queue ~p failed to initialise: ~p~n",
@@ -304,7 +304,7 @@ declare(QueueName, Durable, AutoDelete, Args, Owner, Node) ->
             end,
 
     Node1 = rabbit_mirror_queue_misc:initial_queue_node(Q, Node1),
-    gen_server2:call(
+    gen_server3:call(
       rabbit_amqqueue_sup_sup:start_queue_process(Node1, Q, declare),
       {init, new}, infinity).
 
@@ -647,12 +647,12 @@ list_local(VHostPath) ->
            node() =:= node(QPid) ].
 
 force_event_refresh(Ref) ->
-    [gen_server2:cast(Q#amqqueue.pid,
+    [gen_server3:cast(Q#amqqueue.pid,
                       {force_event_refresh, Ref}) || Q <- list()],
     ok.
 
 notify_policy_changed(#amqqueue{pid = QPid}) ->
-    gen_server2:cast(QPid, policy_changed).
+    gen_server3:cast(QPid, policy_changed).
 
 consumers(#amqqueue{ pid = QPid }) -> delegate:call(QPid, consumers).
 
@@ -692,11 +692,11 @@ pid_of(VHost, QueueName) ->
   end.
 
 delete_exclusive(QPids, ConnId) ->
-    [gen_server2:cast(QPid, {delete_exclusive, ConnId}) || QPid <- QPids],
+    [gen_server3:cast(QPid, {delete_exclusive, ConnId}) || QPid <- QPids],
     ok.
 
 delete_immediately(QPids) ->
-    [gen_server2:cast(QPid, delete_immediately) || QPid <- QPids],
+    [gen_server3:cast(QPid, delete_immediately) || QPid <- QPids],
     ok.
 
 delete(#amqqueue{ pid = QPid }, IfUnused, IfEmpty) ->
@@ -765,7 +765,7 @@ notify_decorators(#amqqueue{pid = QPid}) ->
 notify_sent(QPid, ChPid) ->
     Key = {consumer_credit_to, QPid},
     put(Key, case get(Key) of
-                 1         -> gen_server2:cast(
+                 1         -> gen_server3:cast(
                                 QPid, {notify_sent, ChPid,
                                        ?MORE_CONSUMER_CREDIT_AFTER}),
                               ?MORE_CONSUMER_CREDIT_AFTER;
@@ -863,13 +863,13 @@ node_permits_offline_promotion(Node) ->
 %% [2] This is simpler; as long as it's down that's OK
 
 run_backing_queue(QPid, Mod, Fun) ->
-    gen_server2:cast(QPid, {run_backing_queue, Mod, Fun}).
+    gen_server3:cast(QPid, {run_backing_queue, Mod, Fun}).
 
 set_ram_duration_target(QPid, Duration) ->
-    gen_server2:cast(QPid, {set_ram_duration_target, Duration}).
+    gen_server3:cast(QPid, {set_ram_duration_target, Duration}).
 
 set_maximum_since_use(QPid, Age) ->
-    gen_server2:cast(QPid, {set_maximum_since_use, Age}).
+    gen_server3:cast(QPid, {set_maximum_since_use, Age}).
 
 update_mirroring(QPid) -> ok = delegate:cast(QPid, update_mirroring).
 

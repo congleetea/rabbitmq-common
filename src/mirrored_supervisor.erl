@@ -117,7 +117,7 @@
 %% children requires knowing the overall supervisor pid.
 
 -define(SUPERVISOR, supervisor2).
--define(GEN_SERVER, gen_server2).
+-define(GEN_SERVER, gen_server3).
 -define(PG2,        pg2_fixed).
 -define(SUP_MODULE, mirrored_supervisor_sups).
 

@@ -1,11 +1,11 @@
-%% This file is a copy of `mochijson2.erl' from mochiweb, revision
+%% This file is a copy of `mochijson_mq.erl' from mochiweb, revision
 %% d541e9a0f36c00dcadc2e589f20e47fbf46fc76f.  For the license, see
 %% `LICENSE-MIT-Mochi'.
 
 %% @author Bob Ippolito <bob@mochimedia.com>
 %% @copyright 2007 Mochi Media, Inc.
 
-%% @doc Yet another JSON (RFC 4627) library for Erlang. mochijson2 works
+%% @doc Yet another JSON (RFC 4627) library for Erlang. mochijson_mq works
 %%      with binaries as strings, arrays as lists (without an {array, _})
 %%      wrapper and it only knows how to decode UTF-8 (and ASCII).
 %%
@@ -41,7 +41,7 @@
 %%          </li>
 %%      </ul>
 
--module(mochijson2).
+-module(mochijson_mq).
 -author('bob@mochimedia.com').
 -export([encoder/1, encode/1]).
 -export([decoder/1, decode/1, decode/2]).
@@ -272,7 +272,7 @@ json_encode_string_unicode([C | Cs], State, Acc) ->
                %% Escaping solidus is only useful when trying to protect
                %% against "</script>" injection attacks which are only
                %% possible when JSON is inserted into a HTML document
-               %% in-line. mochijson2 does not protect you from this, so
+               %% in-line. mochijson_mq does not protect you from this, so
                %% if you do insert directly into HTML then you need to
                %% uncomment the following case or escape the output of encode.
                %%
@@ -699,7 +699,7 @@ encoder_utf8_test() ->
         encode(<<1,"\321\202\320\265\321\201\321\202">>),
 
     %% raw utf8 output (optional)
-    Enc = mochijson2:encoder([{utf8, true}]),
+    Enc = mochijson_mq:encoder([{utf8, true}]),
     [34,"\\u0001",[209,130],[208,181],[209,129],[209,130],34] =
         Enc(<<1,"\321\202\320\265\321\201\321\202">>).
 

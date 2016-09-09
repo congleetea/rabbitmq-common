@@ -229,7 +229,7 @@
 -spec pmerge(term(), term(), [term()]) -> [term()].
 -spec plmerge([term()], [term()]) -> [term()].
 -spec pset(term(), term(), [term()]) -> [term()].
--spec format_message_queue(any(), priority_queue:q()) -> term().
+-spec format_message_queue(any(), priority_queue_mq:q()) -> term().
 -spec append_rpc_all_nodes([node()], atom(), atom(), [any()]) -> [any()].
 -spec os_cmd(string()) -> string().
 -spec is_os_process_alive(non_neg_integer()) -> boolean().
@@ -470,7 +470,7 @@ report_coverage_percentage(File, Cov, NotCov, Mod) ->
                Mod]).
 
 confirm_to_sender(Pid, MsgSeqNos) ->
-    gen_server2:cast(Pid, {confirm, MsgSeqNos, self()}).
+    gen_server3:cast(Pid, {confirm, MsgSeqNos, self()}).
 
 %% @doc Halts the emulator returning the given status code to the os.
 %% On Windows this function will block indefinitely so as to give the io
@@ -919,17 +919,17 @@ plmerge(P1, P2) ->
 pset(Key, Value, List) -> [{Key, Value} | proplists:delete(Key, List)].
 
 format_message_queue(_Opt, MQ) ->
-    Len = priority_queue:len(MQ),
+    Len = priority_queue_mq:len(MQ),
     {Len,
      case Len > 100 of
-         false -> priority_queue:to_list(MQ);
+         false -> priority_queue_mq:to_list(MQ);
          true  -> {summary,
                    orddict:to_list(
                      lists:foldl(
                        fun ({P, V}, Counts) ->
                                orddict:update_counter(
                                  {P, format_message_queue_entry(V)}, 1, Counts)
-                       end, orddict:new(), priority_queue:to_list(MQ)))}
+                       end, orddict:new(), priority_queue_mq:to_list(MQ)))}
      end}.
 
 format_message_queue_entry(V) when is_atom(V) ->
@@ -1031,7 +1031,7 @@ sequence_error([_ | Rest])               -> sequence_error(Rest).
 
 json_encode(Term) ->
     try
-        {ok, mochijson2:encode(Term)}
+        {ok, mochijson_mq:encode(Term)}
     catch
         exit:{json_encode, E} ->
             {error, E}
@@ -1039,9 +1039,9 @@ json_encode(Term) ->
 
 json_decode(Term) ->
     try
-        {ok, mochijson2:decode(Term)}
+        {ok, mochijson_mq:decode(Term)}
     catch
-        %% Sadly `mochijson2:decode/1' does not offer a nice way to catch
+        %% Sadly `mochijson_mq:decode/1' does not offer a nice way to catch
         %% decoding errors...
         error:_ -> error
     end.
@@ -1213,7 +1213,7 @@ get_gc_info(Pid) ->
     end.
 
 %% -------------------------------------------------------------------------
-%% Begin copypasta from gen_server2.erl
+%% Begin copypasta from gen_server3.erl
 
 get_parent() ->
     case get('$ancestors') of
@@ -1243,5 +1243,5 @@ whereis_name(Name) ->
         [] -> undefined
     end.
 
-%% End copypasta from gen_server2.erl
+%% End copypasta from gen_server3.erl
 %% -------------------------------------------------------------------------

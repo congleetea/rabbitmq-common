@@ -1,18 +1,18 @@
 %% This file is a copy of gen_server.erl from the R13B-1 Erlang/OTP
 %% distribution, with the following modifications:
 %%
-%% 1) the module name is gen_server2
+%% 1) the module name is gen_server3
 %%
 %% 2) more efficient handling of selective receives in callbacks
-%% gen_server2 processes drain their message queue into an internal
+%% gen_server3 processes drain their message queue into an internal
 %% buffer before invoking any callback module functions. Messages are
 %% dequeued from the buffer for processing. Thus the effective message
-%% queue of a gen_server2 process is the concatenation of the internal
+%% queue of a gen_server3 process is the concatenation of the internal
 %% buffer and the real message queue.
 %% As a result of the draining, any selective receive invoked inside a
 %% callback is less likely to have to scan a large message queue.
 %%
-%% 3) gen_server2:cast is guaranteed to be order-preserving
+%% 3) gen_server3:cast is guaranteed to be order-preserving
 %% The original code could reorder messages when communicating with a
 %% process on a remote node that was not currently connected.
 %%
@@ -42,7 +42,7 @@
 %% this timeout has occurred, hibernation will occur as normal. Upon
 %% awaking, a new current timeout value will be calculated.
 %%
-%% The purpose is that the gen_server2 takes care of adjusting the
+%% The purpose is that the gen_server3 takes care of adjusting the
 %% current timeout value such that the process will increase the
 %% timeout value repeatedly if it is unable to sleep for the
 %% DesiredHibernatePeriod. If it is able to sleep for the
@@ -69,13 +69,13 @@
 %% which will be passed into any of the callback functions in the new
 %% module. Note there is no form also encompassing a reply, thus if
 %% you wish to reply in handle_call/3 and change the callback module,
-%% you need to use gen_server2:reply/2 to issue the reply
+%% you need to use gen_server3:reply/2 to issue the reply
 %% manually. The init function can similarly return a 5th argument,
 %% Module, in order to dynamically decide the callback module on init.
 %%
 %% 8) The callback module can optionally implement
 %% format_message_queue/2 which is the equivalent of format_status/2
-%% but where the second argument is specifically the priority_queue
+%% but where the second argument is specifically the priority_queue_mq
 %% which contains the prioritised message_queue.
 %%
 %% 9) The function with_state/2 can be used to debug a process with
@@ -111,7 +111,7 @@
 %%
 %%     $Id$
 %%
--module(gen_server2).
+-module(gen_server3).
 
 %%% ---------------------------------------------------
 %%%
@@ -511,7 +511,7 @@ enter_loop(Mod, Options, State, ServerName, Timeout, Backoff) ->
     Name = get_proc_name(ServerName),
     Parent = get_parent(),
     Debug = debug_options(Name, Options),
-    Queue = priority_queue:new(),
+    Queue = priority_queue_mq:new(),
     Backoff1 = extend_backoff(Backoff),
     loop(find_prioritisers(
            #gs2_state { parent = Parent, name = Name, state = State,
@@ -534,7 +534,7 @@ init_it(Starter, self, Name, Mod, Args, Options) ->
 init_it(Starter, Parent, Name0, Mod, Args, Options) ->
     Name = name(Name0),
     Debug = debug_options(Name, Options),
-    Queue = priority_queue:new(),
+    Queue = priority_queue_mq:new(),
     GS2State = find_prioritisers(
                  #gs2_state { parent  = Parent,
                               name    = Name,
@@ -621,7 +621,7 @@ extend_backoff({backoff, InitialTimeout, MinimumTimeout, DesiredHibPeriod}) ->
 loop(GS2State = #gs2_state { time          = hibernate,
                              timeout_state = undefined,
                              queue         = Queue }) ->
-    case priority_queue:is_empty(Queue) of
+    case priority_queue_mq:is_empty(Queue) of
         true  ->
             pre_hibernate(GS2State);
         false ->
@@ -640,7 +640,7 @@ drain(GS2State) ->
 process_next_msg(GS2State = #gs2_state { time          = Time,
                                          timeout_state = TimeoutState,
                                          queue         = Queue }) ->
-    case priority_queue:out(Queue) of
+    case priority_queue_mq:out(Queue) of
         {{value, Msg}, Queue1} ->
             process_msg(Msg, GS2State #gs2_state { queue = Queue1 });
         {empty, Queue1} ->
@@ -773,7 +773,7 @@ in(_Input, drop, GS2State) ->
     GS2State;
 
 in(Input, Priority, GS2State = #gs2_state { queue = Queue }) ->
-    GS2State # gs2_state { queue = priority_queue:in(Input, Priority, Queue) }.
+    GS2State # gs2_state { queue = priority_queue_mq:in(Input, Priority, Queue) }.
 
 process_msg({system, From, Req},
             GS2State = #gs2_state { parent = Parent, debug  = Debug }) ->
@@ -1288,7 +1288,7 @@ function_exported_or_default(Mod, Fun, Arity, Default) ->
         true -> case Arity of
                     3 -> fun (Msg, GS2State = #gs2_state { queue = Queue,
                                                            state = State }) ->
-                                 Length = priority_queue:len(Queue),
+                                 Length = priority_queue_mq:len(Queue),
                                  case catch Mod:Fun(Msg, Length, State) of
                                      drop ->
                                          drop;
@@ -1300,7 +1300,7 @@ function_exported_or_default(Mod, Fun, Arity, Default) ->
                          end;
                     4 -> fun (Msg, From, GS2State = #gs2_state { queue = Queue,
                                                                  state = State }) ->
-                                 Length = priority_queue:len(Queue),
+                                 Length = priority_queue_mq:len(Queue),
                                  case catch Mod:Fun(Msg, From, Length, State) of
                                      Res when is_integer(Res) ->
                                          Res;
@@ -1329,7 +1329,7 @@ format_status(Opt, StatusData) ->
     Specfic = callback(Mod, format_status, [Opt, [PDict, State]],
                        fun () -> [{data, [{"State", State}]}] end),
     Messages = callback(Mod, format_message_queue, [Opt, Queue],
-                        fun () -> priority_queue:to_list(Queue) end),
+                        fun () -> priority_queue_mq:to_list(Queue) end),
     [{header, Header},
      {data, [{"Status", SysState},
              {"Parent", Parent},

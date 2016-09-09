@@ -1,4 +1,4 @@
-%% This file is a copy of `mochijson2.erl' from mochiweb, revision
+%% This file is a copy of `mochijson_mq.erl' from mochiweb, revision
 %% d541e9a0f36c00dcadc2e589f20e47fbf46fc76f.  For the license, see
 %% `LICENSE-MIT-Mochi'.
 
