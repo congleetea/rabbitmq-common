@@ -65,19 +65,22 @@
 
 %%----------------------------------------------------------------------------
 
+-ifdef(use_specs).
+
 -export_type([bump_msg/0]).
 
 -opaque(bump_msg() :: {pid(), non_neg_integer()}).
 -type(credit_spec() :: {non_neg_integer(), non_neg_integer()}).
 
--spec send
-        (pid()) -> 'ok';
-        (credit_spec()) -> 'ok'.
--spec ack(pid()) -> 'ok'.
--spec ack(pid(), credit_spec()) -> 'ok'.
--spec handle_bump_msg(bump_msg()) -> 'ok'.
--spec blocked() -> boolean().
--spec peer_down(pid()) -> 'ok'.
+-spec(send/1 :: (pid()) -> 'ok').
+-spec(send/2 :: (pid(), credit_spec()) -> 'ok').
+-spec(ack/1 :: (pid()) -> 'ok').
+-spec(ack/2 :: (pid(), credit_spec()) -> 'ok').
+-spec(handle_bump_msg/1 :: (bump_msg()) -> 'ok').
+-spec(blocked/0 :: () -> boolean()).
+-spec(peer_down/1 :: (pid()) -> 'ok').
+
+-endif.
 
 %%----------------------------------------------------------------------------
 
@@ -107,13 +110,13 @@
                                       {from, FROM},
                                       {from_info, erlang:process_info(FROM)},
                                       {timestamp,
-                                       os:system_time(
+                                       time_compat:os_system_time(
                                          milliseconds)}])).
 -define(TRACE_UNBLOCKED(SELF, FROM), rabbit_event:notify(credit_flow_unblocked,
                                        [{process, SELF},
                                         {from, FROM},
                                         {timestamp,
-                                         os:system_time(
+                                         time_compat:os_system_time(
                                            milliseconds)}])).
 -else.
 -define(TRACE_BLOCKED(SELF, FROM), ok).
@@ -168,8 +171,8 @@ state() -> case blocked() of
                true  -> flow;
                false -> case get(credit_blocked_at) of
                             undefined -> running;
-                            B         -> Now = erlang:monotonic_time(),
-                                         Diff = erlang:convert_time_unit(Now - B,
+                            B         -> Now = time_compat:monotonic_time(),
+                                         Diff = time_compat:convert_time_unit(Now - B,
                                                                               native,
                                                                               micro_seconds),
                                          case Diff < ?STATE_CHANGE_INTERVAL of
@@ -200,7 +203,7 @@ grant(To, Quantity) ->
 block(From) ->
     ?TRACE_BLOCKED(self(), From),
     case blocked() of
-        false -> put(credit_blocked_at, erlang:monotonic_time());
+        false -> put(credit_blocked_at, time_compat:monotonic_time());
         true  -> ok
     end,
     ?UPDATE(credit_blocked, [], Blocks, [From | Blocks]).

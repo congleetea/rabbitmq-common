@@ -29,13 +29,11 @@
     config_to_testcase_name/2,
     testcases/1,
     testcase_number/3,
-    testcase_absname/2, testcase_absname/3,
     testcase_started/2, testcase_finished/2,
-    exec/1, exec/2,
-    make/3,
+    make_verbosity/0,
+    run_cmd/1, run_cmd_and_capture_output/1,
     get_config/2, set_config/2,
-    merge_app_env/2, merge_app_env_in_erlconf/2,
-    cover_work_factor/2
+    merge_app_env/2, merge_app_env_in_erlconf/2
   ]).
 
 -define(SSL_CERT_PASSWORD, "test").
@@ -46,7 +44,7 @@
 
 log_environment() ->
     Vars = lists:sort(fun(A, B) -> A =< B end, os:getenv()),
-    ct:pal(?LOW_IMPORTANCE, "Environment variables:~n~s", [
+    ct:pal("Environment variable:~n~s", [
         [io_lib:format("  ~s~n", [V]) || V <- Vars]]).
 
 run_setup_steps(Config) ->
@@ -54,12 +52,10 @@ run_setup_steps(Config) ->
 
 run_setup_steps(Config, ExtraSteps) ->
     Steps = [
-      fun ensure_current_srcdir/1,
       fun ensure_rabbit_common_srcdir/1,
       fun ensure_erlang_mk_depsdir/1,
       fun ensure_rabbit_srcdir/1,
       fun ensure_make_cmd/1,
-      fun ensure_erl_call_cmd/1,
       fun ensure_rabbitmqctl_cmd/1,
       fun ensure_ssl_certs/1,
       fun start_long_running_testsuite_monitor/1
@@ -82,20 +78,6 @@ run_steps(Config, [Step | Rest]) ->
     end;
 run_steps(Config, []) ->
     Config.
-
-ensure_current_srcdir(Config) ->
-    Path = case get_config(Config, current_srcdir) of
-        undefined ->
-            os:getenv("PWD");
-        P ->
-            P
-    end,
-    case filelib:is_dir(Path) of
-        true  -> set_config(Config, {current_srcdir, Path});
-        false -> {skip,
-                  "Current source directory required, " ++
-                  "please set 'current_srcdir' in ct config"}
-    end.
 
 ensure_rabbit_common_srcdir(Config) ->
     Path = case get_config(Config, rabbit_common_srcdir) of
@@ -177,23 +159,13 @@ ensure_make_cmd(Config) ->
         M ->
             M
     end,
-    Cmd = [Make, "--version"],
-    case exec(Cmd, [{match_stdout, "GNU Make"}]) of
-        {ok, _} -> set_config(Config, {make_cmd, Make});
-        _       -> {skip,
-                    "GNU Make required, " ++
-                    "please set MAKE or 'make_cmd' in ct config"}
-    end.
-
-ensure_erl_call_cmd(Config) ->
-    ErlCallDir = code:lib_dir(erl_interface, bin),
-    ErlCall = filename:join(ErlCallDir, "erl_call"),
-    Cmd = [ErlCall],
-    case exec(Cmd, [{match_stdout, "Usage: "}]) of
-        {ok, _} -> set_config(Config, {erl_call_cmd, ErlCall});
-        _       -> {skip,
-                    "erl_call required, " ++
-                    "please set ERL_CALL or 'erl_call_cmd' in ct config"}
+    Make1 = "\"" ++ Make ++ "\"",
+    Cmd = Make1 ++ " --version | grep -q 'GNU Make'",
+    case run_cmd(Cmd) of
+        true -> set_config(Config, {make_cmd, Make1});
+        _    -> {skip,
+                 "GNU Make required, " ++
+                 "please set MAKE or 'make_cmd' in ct config"}
     end.
 
 ensure_rabbitmqctl_cmd(Config) ->
@@ -219,26 +191,26 @@ ensure_rabbitmqctl_cmd(Config) ->
         false ->
             Error;
         _ ->
-            Cmd = [Rabbitmqctl],
-            case exec(Cmd, [drop_stdout]) of
-                {error, 64, _} ->
-                    set_config(Config, {rabbitmqctl_cmd, Rabbitmqctl});
-                _ ->
-                    Error
+            Rabbitmqctl1 = "\"" ++ Rabbitmqctl ++ "\"",
+            Cmd = Rabbitmqctl1 ++ " foobar 2>&1 |" ++
+              " grep -q 'Error: could not recognise command'",
+            case run_cmd(Cmd) of
+                true -> set_config(Config, {rabbitmqctl_cmd, Rabbitmqctl1});
+                _    -> Error
             end
     end.
 
 ensure_ssl_certs(Config) ->
+    Make = ?config(make_cmd, Config),
     SrcDir = ?config(rabbit_common_srcdir, Config),
     CertsMakeDir = filename:join([SrcDir, "tools", "tls-certs"]),
     PrivDir = ?config(priv_dir, Config),
     CertsDir = filename:join(PrivDir, "certs"),
-    CertsPwd = proplists:get_value(rmq_certspwd, Config, ?SSL_CERT_PASSWORD),
-    Cmd = [
-      "PASSWORD=" ++ CertsPwd,
-      "DIR=" ++ CertsDir],
-    case make(Config, CertsMakeDir, Cmd) of
-        {ok, _} ->
+    Cmd = Make ++ " -C " ++ CertsMakeDir ++ make_verbosity() ++
+      " PASSWORD='" ++ ?SSL_CERT_PASSWORD ++ "'" ++
+      " DIR='" ++ CertsDir ++ "'",
+    case run_cmd(Cmd) of
+        true ->
             %% Add SSL certs to the broker configuration.
             Config1 = merge_app_env(Config,
               {rabbit, [
@@ -250,7 +222,7 @@ ensure_ssl_certs(Config) ->
                       {fail_if_no_peer_cert, true}
                     ]}]}),
             set_config(Config1, {rmq_certsdir, CertsDir});
-        _ ->
+        false ->
             {skip, "Failed to create SSL certificates"}
     end.
 
@@ -275,15 +247,15 @@ stop_long_running_testsuite_monitor(Config) ->
 long_running_testsuite_monitor(TimerRef, Testcases) ->
     receive
         {started, Testcase} ->
-            Testcases1 = [{Testcase, erlang:monotonic_time(seconds)}
+            Testcases1 = [{Testcase, time_compat:monotonic_time(seconds)}
                           | Testcases],
             long_running_testsuite_monitor(TimerRef, Testcases1);
         {finished, Testcase} ->
             Testcases1 = proplists:delete(Testcase, Testcases),
             long_running_testsuite_monitor(TimerRef, Testcases1);
         ping_ct ->
-            T1 = erlang:monotonic_time(seconds),
-            ct:pal(?STD_IMPORTANCE, "Testcases still in progress:~s",
+            T1 = time_compat:monotonic_time(seconds),
+            ct:pal("Testcases still in progress:~s",
               [[
                   begin
                       TDiff = format_time_diff(T1, T0),
@@ -315,34 +287,20 @@ testcase_finished(Config, Testcase) ->
     Config.
 
 config_to_testcase_name(Config, Testcase) ->
-    testcase_absname(Config, Testcase).
-
-testcase_absname(Config, Testcase) ->
-    testcase_absname(Config, Testcase, "/").
-
-testcase_absname(Config, Testcase, Sep) ->
     Name = rabbit_misc:format("~s", [Testcase]),
     case get_config(Config, tc_group_properties) of
         [] ->
             Name;
         Props ->
-            Name1 = case Name of
-                "" ->
-                    rabbit_misc:format("~s",
-                      [proplists:get_value(name, Props)]);
-                _ ->
-                    rabbit_misc:format("~s~s~s",
-                      [proplists:get_value(name, Props), Sep, Name])
-            end,
-            testcase_absname1(Name1,
-              get_config(Config, tc_group_path), Sep)
+            Name1 = rabbit_misc:format("~s/~s",
+              [proplists:get_value(name, Props), Name]),
+            config_to_testcase_name1(Name1, get_config(Config, tc_group_path))
     end.
 
-testcase_absname1(Name, [Props | Rest], Sep) ->
-    Name1 = rabbit_misc:format("~s~s~s",
-      [proplists:get_value(name, Props), Sep, Name]),
-    testcase_absname1(Name1, Rest, Sep);
-testcase_absname1(Name, [], _) ->
+config_to_testcase_name1(Name, [Props | Rest]) ->
+    Name1 = rabbit_misc:format("~s/~s", [proplists:get_value(name, Props), Name]),
+    config_to_testcase_name1(Name1, Rest);
+config_to_testcase_name1(Name, []) ->
     lists:flatten(Name).
 
 testcases(Testsuite) ->
@@ -389,112 +347,33 @@ testcase_number1([], _, N) ->
 %% Helpers for helpers.
 %% -------------------------------------------------------------------
 
-exec(Cmd) ->
-    exec(Cmd, []).
-
-exec([Cmd | Args], Options) when is_list(Cmd) orelse is_binary(Cmd) ->
-    Cmd1 = case (lists:member($/, Cmd) orelse lists:member($\\, Cmd)) of
-        true ->
-            Cmd;
-        false ->
-            case os:find_executable(Cmd) of
-                false -> Cmd;
-                Path  -> Path
-            end
-    end,
-    Args1 = [format_arg(Arg) || Arg <- Args],
-    {LocalOptions, PortOptions} = lists:partition(
-      fun
-          ({match_stdout, _}) -> true;
-          (drop_stdout)       -> true;
-          (_)                 -> false
-      end, Options),
-    PortOptions1 = case lists:member(nouse_stdio, PortOptions) of
-        true  -> PortOptions;
-        false -> [use_stdio, stderr_to_stdout | PortOptions]
-    end,
-    Log = "+ ~s (pid ~p)",
-    {PortOptions2, Log1} = case proplists:get_value(env, PortOptions1) of
-        undefined ->
-            {PortOptions1, Log};
-        Env ->
-            Env1 = [
-              begin
-                  Key1 = format_arg(Key),
-                  Value1 = format_arg(Value),
-                  {Key1, Value1}
-              end
-              || {Key, Value} <- Env
-            ],
-            {
-              [{env, Env1} | proplists:delete(env, PortOptions1)],
-              Log ++ "~n~nEnvironment variables:~n" ++
-              string:join(
-                [rabbit_misc:format("  ~s=~s", [K, V]) || {K, V} <- Env1],
-                "~n")
-            }
-    end,
-    ct:pal(?LOW_IMPORTANCE, Log1, [string:join([Cmd1 | Args1], " "), self()]),
-    try
-        Port = erlang:open_port(
-          {spawn_executable, Cmd1}, [
-            {args, Args1},
-            exit_status
-            | PortOptions2]),
-        port_receive_loop(Port, "", LocalOptions)
-    catch
-        error:Reason ->
-            ct:pal(?LOW_IMPORTANCE, "~s: ~s",
-              [Cmd1, file:format_error(Reason)]),
-            {error, Reason, file:format_error(Reason)}
+make_verbosity() ->
+    case os:getenv("V") of
+        false -> "";
+        V     -> " V=" ++ V
     end.
 
-format_arg({Format, FormatArgs}) ->
-    rabbit_misc:format(Format, FormatArgs);
-format_arg(Arg) when is_atom(Arg) ->
-    atom_to_list(Arg);
-format_arg(Arg) when is_binary(Arg) ->
-    binary_to_list(Arg);
-format_arg(Arg) ->
-    Arg.
-
-port_receive_loop(Port, Stdout, Options) ->
-    receive
-        {Port, {exit_status, X}} ->
-            DropStdout = lists:member(drop_stdout, Options) orelse
-              Stdout =:= "",
-            if
-                DropStdout ->
-                    ct:pal(?LOW_IMPORTANCE, "Exit code: ~p (pid ~p)",
-                      [X, self()]);
-                true ->
-                    ct:pal(?LOW_IMPORTANCE, "~s~nExit code: ~p (pid ~p)",
-                      [Stdout, X, self()])
-            end,
-            case proplists:get_value(match_stdout, Options) of
-                undefined ->
-                    case X of
-                        0 -> {ok, Stdout};
-                        _ -> {error, X, Stdout}
-                    end;
-                RE ->
-                    case re:run(Stdout, RE, [{capture, none}]) of
-                        match   -> {ok, Stdout};
-                        nomatch -> {error, X, Stdout}
-                    end
-            end;
-        {Port, {data, Out}} ->
-            port_receive_loop(Port, Stdout ++ Out, Options)
+run_cmd(Cmd) ->
+    case run_cmd_and_capture_output(Cmd) of
+        {ok, _}    -> true;
+        {error, _} -> false
     end.
 
-make(Config, Dir, Args) ->
-    Make = ?config(make_cmd, Config),
-    Verbosity = case os:getenv("V") of
-        false -> [];
-        V     -> ["V=" ++ V]
-    end,
-    Cmd = [Make, "-C", Dir] ++ Verbosity ++ Args,
-    exec(Cmd).
+run_cmd_and_capture_output(Cmd) ->
+    Marker = "COMMAND SUCCESSFUL",
+    Cmd1 = "(" ++ Cmd ++ ") && echo " ++ Marker,
+    Output = string:strip(string:strip(os:cmd(Cmd1), right, $\n), right, $\r),
+    ct:pal("+ ~s~n~s", [Cmd1, Output]),
+    %% os:cmd/1 doesn't return the exit status. Therefore, we verify if
+    %% our marker was printed.
+    case re:run(Output, Marker, [{capture, none}]) of
+        match ->
+            Output1 = re:replace(Output, "^" ++ Marker ++ "$", "",
+                [multiline, {return, list}]),
+            {ok, Output1};
+        _ ->
+            {error, Output}
+    end.
 
 %% This is the same as ?config(), except this one doesn't log a warning
 %% if the key is missing.
@@ -527,11 +406,3 @@ merge_app_env_in_erlconf(ErlangConfig, [Env | Rest]) ->
     merge_app_env_in_erlconf(ErlangConfig1, Rest);
 merge_app_env_in_erlconf(ErlangConfig, []) ->
     ErlangConfig.
-
-%% -------------------------------------------------------------------
-%% Cover-related functions.
-%% -------------------------------------------------------------------
-
-%% TODO.
-cover_work_factor(_Config, Without) ->
-    Without.

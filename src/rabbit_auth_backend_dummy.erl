@@ -24,7 +24,11 @@
 -export([user_login_authentication/2, user_login_authorization/1,
          check_vhost_access/3, check_resource_access/3]).
 
--spec user() -> rabbit_types:user().
+-ifdef(use_specs).
+
+-spec(user/0 :: () -> rabbit_types:user()).
+
+-endif.
 
 %% A user to be used by the direct client when permission checks are
 %% not needed. This user can do anything AMQPish.

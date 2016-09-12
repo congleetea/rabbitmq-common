@@ -56,7 +56,7 @@
 -export([send_command/2, deliver/4, deliver_reply/2,
          send_credit_reply/2, send_drained/2]).
 -export([list/0, info_keys/0, info/1, info/2, info_all/0, info_all/1,
-         emit_info_all/4, info_local/1]).
+         info_all/3]).
 -export([refresh_config_local/0, ready_for_close/1]).
 -export([refresh_interceptors/0]).
 -export([force_event_refresh/1]).
@@ -65,7 +65,7 @@
          handle_info/2, handle_pre_hibernate/1, prioritise_call/4,
          prioritise_cast/3, prioritise_info/3, format_message_queue/2]).
 %% Internal
--export([list_local/0, emit_info_local/3, deliver_reply_local/3]).
+-export([list_local/0, deliver_reply_local/3]).
 -export([get_vhost/1, get_user/1]).
 
 -record(ch, {
@@ -163,9 +163,7 @@
          acks_uncommitted,
          prefetch_count,
          global_prefetch_count,
-         state,
-         reductions,
-         garbage_collection]).
+         state]).
 
 -define(CREATION_EVENT_KEYS,
         [pid,
@@ -185,47 +183,51 @@
 
 %%----------------------------------------------------------------------------
 
+-ifdef(use_specs).
+
 -export_type([channel_number/0]).
 
--type channel_number() :: non_neg_integer().
+-type(channel_number() :: non_neg_integer()).
 
 -export_type([channel/0]).
 
--type channel() :: #ch{}.
+-type(channel() :: #ch{}).
 
--spec start_link
-        (channel_number(), pid(), pid(), pid(), string(), rabbit_types:protocol(),
-         rabbit_types:user(), rabbit_types:vhost(), rabbit_framing:amqp_table(),
-         pid(), pid()) ->
-            rabbit_types:ok_pid_or_error().
--spec do(pid(), rabbit_framing:amqp_method_record()) -> 'ok'.
--spec do
-        (pid(), rabbit_framing:amqp_method_record(),
-         rabbit_types:maybe(rabbit_types:content())) ->
-            'ok'.
--spec do_flow
-        (pid(), rabbit_framing:amqp_method_record(),
-         rabbit_types:maybe(rabbit_types:content())) ->
-            'ok'.
--spec flush(pid()) -> 'ok'.
--spec shutdown(pid()) -> 'ok'.
--spec send_command(pid(), rabbit_framing:amqp_method_record()) -> 'ok'.
--spec deliver
-        (pid(), rabbit_types:ctag(), boolean(), rabbit_amqqueue:qmsg()) -> 'ok'.
--spec deliver_reply(binary(), rabbit_types:delivery()) -> 'ok'.
--spec deliver_reply_local(pid(), binary(), rabbit_types:delivery()) -> 'ok'.
--spec send_credit_reply(pid(), non_neg_integer()) -> 'ok'.
--spec send_drained(pid(), [{rabbit_types:ctag(), non_neg_integer()}]) -> 'ok'.
--spec list() -> [pid()].
--spec list_local() -> [pid()].
--spec info_keys() -> rabbit_types:info_keys().
--spec info(pid()) -> rabbit_types:infos().
--spec info(pid(), rabbit_types:info_keys()) -> rabbit_types:infos().
--spec info_all() -> [rabbit_types:infos()].
--spec info_all(rabbit_types:info_keys()) -> [rabbit_types:infos()].
--spec refresh_config_local() -> 'ok'.
--spec ready_for_close(pid()) -> 'ok'.
--spec force_event_refresh(reference()) -> 'ok'.
+-spec(start_link/11 ::
+        (channel_number(), pid(), pid(), pid(), string(),
+         rabbit_types:protocol(), rabbit_types:user(), rabbit_types:vhost(),
+         rabbit_framing:amqp_table(), pid(), pid()) ->
+                            rabbit_types:ok_pid_or_error()).
+-spec(do/2 :: (pid(), rabbit_framing:amqp_method_record()) -> 'ok').
+-spec(do/3 :: (pid(), rabbit_framing:amqp_method_record(),
+               rabbit_types:maybe(rabbit_types:content())) -> 'ok').
+-spec(do_flow/3 :: (pid(), rabbit_framing:amqp_method_record(),
+                    rabbit_types:maybe(rabbit_types:content())) -> 'ok').
+-spec(flush/1 :: (pid()) -> 'ok').
+-spec(shutdown/1 :: (pid()) -> 'ok').
+-spec(send_command/2 :: (pid(), rabbit_framing:amqp_method_record()) -> 'ok').
+-spec(deliver/4 ::
+        (pid(), rabbit_types:ctag(), boolean(), rabbit_amqqueue:qmsg())
+        -> 'ok').
+-spec(deliver_reply/2 :: (binary(), rabbit_types:delivery()) -> 'ok').
+-spec(deliver_reply_local/3 ::
+        (pid(), binary(), rabbit_types:delivery()) -> 'ok').
+-spec(send_credit_reply/2 :: (pid(), non_neg_integer()) -> 'ok').
+-spec(send_drained/2 :: (pid(), [{rabbit_types:ctag(), non_neg_integer()}])
+                        -> 'ok').
+-spec(list/0 :: () -> [pid()]).
+-spec(list_local/0 :: () -> [pid()]).
+-spec(info_keys/0 :: () -> rabbit_types:info_keys()).
+-spec(info/1 :: (pid()) -> rabbit_types:infos()).
+-spec(info/2 :: (pid(), rabbit_types:info_keys()) -> rabbit_types:infos()).
+-spec(info_all/0 :: () -> [rabbit_types:infos()]).
+-spec(info_all/1 :: (rabbit_types:info_keys()) -> [rabbit_types:infos()]).
+-spec(info_all/3 :: (rabbit_types:info_keys(), reference(), pid()) -> 'ok').
+-spec(refresh_config_local/0 :: () -> 'ok').
+-spec(ready_for_close/1 :: (pid()) -> 'ok').
+-spec(force_event_refresh/1 :: (reference()) -> 'ok').
+
+-endif.
 
 %%----------------------------------------------------------------------------
 
@@ -328,19 +330,9 @@ info_all() ->
 info_all(Items) ->
     rabbit_misc:filter_exit_map(fun (C) -> info(C, Items) end, list()).
 
-info_local(Items) ->
-    rabbit_misc:filter_exit_map(fun (C) -> info(C, Items) end, list_local()).
-
-emit_info_all(Nodes, Items, Ref, AggregatorPid) ->
-    Pids = [ spawn_link(Node, rabbit_channel, emit_info_local, [Items, Ref, AggregatorPid]) || Node <- Nodes ],
-    rabbit_control_misc:await_emitters_termination(Pids).
-
-emit_info_local(Items, Ref, AggregatorPid) ->
-    emit_info(list_local(), Items, Ref, AggregatorPid).
-
-emit_info(PidList, InfoItems, Ref, AggregatorPid) ->
+info_all(Items, Ref, AggregatorPid) ->
     rabbit_control_misc:emitting_map_with_exit_handler(
-      AggregatorPid, Ref, fun(C) -> info(C, InfoItems) end, PidList).
+      AggregatorPid, Ref, fun(C) -> info(C, Items) end, list()).
 
 refresh_config_local() ->
     rabbit_misc:upmap(
@@ -624,7 +616,7 @@ handle_pre_hibernate(State) ->
       State, #ch.stats_timer,
       fun () -> emit_stats(State,
                            [{idle_since,
-                             os:system_time(milli_seconds)}])
+                             time_compat:os_system_time(milli_seconds)}])
                 end),
     {hibernate, rabbit_event:stop_stats_timer(State, #ch.stats_timer)}.
 
@@ -683,8 +675,7 @@ handle_exception(Reason, State = #ch{protocol     = Protocol,
     {_Result, State1} = notify_queues(State),
     case rabbit_binary_generator:map_exception(Channel, Reason, Protocol) of
         {Channel, CloseMethod} ->
-            rabbit_log_channel:error(
-                "Channel error on connection ~p (~s, vhost: '~s',"
+            rabbit_channel:error("Channel error on connection ~p (~s, vhost: '~s',"
                 " user: '~s'), channel ~p:~n~s~n",
                 [ConnPid, ConnName, VHost, User#user.username,
                  Channel, format_soft_error(Reason)]),
@@ -695,12 +686,14 @@ handle_exception(Reason, State = #ch{protocol     = Protocol,
             {stop, normal, State1}
     end.
 
--spec precondition_failed(string()) -> no_return().
-
+-ifdef(use_specs).
+-spec(precondition_failed/1 :: (string()) -> no_return()).
+-endif.
 precondition_failed(Format) -> precondition_failed(Format, []).
 
--spec precondition_failed(string(), [any()]) -> no_return().
-
+-ifdef(use_specs).
+-spec(precondition_failed/2 :: (string(), [any()]) -> no_return()).
+-endif.
 precondition_failed(Format, Params) ->
     rabbit_misc:protocol_error(precondition_failed, Format, Params).
 
@@ -2005,11 +1998,6 @@ i(global_prefetch_count, #ch{limiter = Limiter}) ->
     rabbit_limiter:get_prefetch_limit(Limiter);
 i(interceptors, #ch{interceptor_state = IState}) ->
     IState;
-i(garbage_collection, _State) ->
-    rabbit_misc:get_gc_info(self());
-i(reductions, _State) ->
-    {reductions, Reductions} = erlang:process_info(self(), reductions),
-    Reductions;
 i(Item, _) ->
     throw({bad_argument, Item}).
 

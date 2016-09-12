@@ -45,7 +45,6 @@
 -export([format/2, format_many/1, format_stderr/2]).
 -export([unfold/2, ceil/1, queue_fold/3]).
 -export([sort_field_table/1]).
--export([atom_to_binary/1]).
 -export([pid_to_string/1, string_to_pid/1,
          pid_change_node/2, node_to_fake_pid/1]).
 -export([version_compare/2, version_compare/3]).
@@ -70,14 +69,13 @@
 -export([interval_operation/5]).
 -export([ensure_timer/4, stop_timer/2, send_after/3, cancel_timer/1]).
 -export([get_parent/0]).
--export([store_proc_name/1, store_proc_name/2, get_proc_name/0]).
+-export([store_proc_name/1, store_proc_name/2]).
 -export([moving_average/4]).
 -export([get_env/3]).
 -export([get_channel_operation_timeout/0]).
 -export([random/1]).
--export([rpc_call/4, rpc_call/5]).
+-export([rpc_call/4, rpc_call/5, rpc_call/7]).
 -export([report_default_thread_pool_size/0]).
--export([get_gc_info/1]).
 
 %% Horrible macro to use in guards
 -define(IS_BENIGN_EXIT(R),
@@ -86,186 +84,195 @@
 
 %%----------------------------------------------------------------------------
 
+-ifdef(use_specs).
+
 -export_type([resource_name/0, thunk/1, channel_or_connection_exit/0]).
 
--type ok_or_error() :: rabbit_types:ok_or_error(any()).
--type thunk(T) :: fun(() -> T).
--type resource_name() :: binary().
--type channel_or_connection_exit()
-      :: rabbit_types:channel_exit() | rabbit_types:connection_exit().
--type digraph_label() :: term().
--type graph_vertex_fun() ::
-        fun (({atom(), [term()]}) -> [{digraph:vertex(), digraph_label()}]).
--type graph_edge_fun() ::
-        fun (({atom(), [term()]}) -> [{digraph:vertex(), digraph:vertex()}]).
--type tref() :: {'erlang', reference()} | {timer, timer:tref()}.
+-type(ok_or_error() :: rabbit_types:ok_or_error(any())).
+-type(thunk(T) :: fun(() -> T)).
+-type(resource_name() :: binary()).
+-type(channel_or_connection_exit()
+      :: rabbit_types:channel_exit() | rabbit_types:connection_exit()).
+-type(digraph_label() :: term()).
+-type(graph_vertex_fun() ::
+        fun (({atom(), [term()]}) -> [{digraph:vertex(), digraph_label()}])).
+-type(graph_edge_fun() ::
+        fun (({atom(), [term()]}) -> [{digraph:vertex(), digraph:vertex()}])).
+-type(tref() :: {'erlang', reference()} | {timer, timer:tref()}).
 
--spec method_record_type(rabbit_framing:amqp_method_record()) ->
-          rabbit_framing:amqp_method_name().
--spec polite_pause() -> 'done'.
--spec polite_pause(non_neg_integer()) -> 'done'.
--spec die(rabbit_framing:amqp_exception()) -> channel_or_connection_exit().
+-spec(method_record_type/1 :: (rabbit_framing:amqp_method_record())
+                              -> rabbit_framing:amqp_method_name()).
+-spec(polite_pause/0 :: () -> 'done').
+-spec(polite_pause/1 :: (non_neg_integer()) -> 'done').
+-spec(die/1 ::
+        (rabbit_framing:amqp_exception()) -> channel_or_connection_exit()).
 
--spec quit(integer()) -> no_return().
+-spec(quit/1 :: (integer()) -> no_return()).
 
--spec frame_error(rabbit_framing:amqp_method_name(), binary()) ->
-          rabbit_types:connection_exit().
--spec amqp_error
+-spec(frame_error/2 :: (rabbit_framing:amqp_method_name(), binary())
+                       -> rabbit_types:connection_exit()).
+-spec(amqp_error/4 ::
         (rabbit_framing:amqp_exception(), string(), [any()],
-         rabbit_framing:amqp_method_name()) ->
-            rabbit_types:amqp_error().
--spec protocol_error(rabbit_framing:amqp_exception(), string(), [any()]) ->
-          channel_or_connection_exit().
--spec protocol_error
+         rabbit_framing:amqp_method_name())
+        -> rabbit_types:amqp_error()).
+-spec(protocol_error/3 :: (rabbit_framing:amqp_exception(), string(), [any()])
+                          -> channel_or_connection_exit()).
+-spec(protocol_error/4 ::
         (rabbit_framing:amqp_exception(), string(), [any()],
-         rabbit_framing:amqp_method_name()) ->
-            channel_or_connection_exit().
--spec protocol_error(rabbit_types:amqp_error()) ->
-          channel_or_connection_exit().
--spec not_found(rabbit_types:r(atom())) -> rabbit_types:channel_exit().
--spec absent(rabbit_types:amqqueue(), rabbit_amqqueue:absent_reason()) ->
-          rabbit_types:channel_exit().
--spec type_class(rabbit_framing:amqp_field_type()) -> atom().
--spec assert_args_equivalence
-        (rabbit_framing:amqp_table(), rabbit_framing:amqp_table(),
-         rabbit_types:r(any()), [binary()]) ->
-            'ok' | rabbit_types:connection_exit().
--spec assert_field_equivalence
+         rabbit_framing:amqp_method_name()) -> channel_or_connection_exit()).
+-spec(protocol_error/1 ::
+        (rabbit_types:amqp_error()) -> channel_or_connection_exit()).
+-spec(not_found/1 :: (rabbit_types:r(atom())) -> rabbit_types:channel_exit()).
+-spec(absent/2 :: (rabbit_types:amqqueue(), rabbit_amqqueue:absent_reason())
+                  -> rabbit_types:channel_exit()).
+-spec(type_class/1 :: (rabbit_framing:amqp_field_type()) -> atom()).
+-spec(assert_args_equivalence/4 :: (rabbit_framing:amqp_table(),
+                                    rabbit_framing:amqp_table(),
+                                    rabbit_types:r(any()), [binary()]) ->
+                                        'ok' | rabbit_types:connection_exit()).
+-spec(assert_field_equivalence/4 ::
         (any(), any(), rabbit_types:r(any()), atom() | binary()) ->
-            'ok' | rabbit_types:connection_exit().
--spec equivalence_fail
+                                         'ok' | rabbit_types:connection_exit()).
+-spec(equivalence_fail/4 ::
         (any(), any(), rabbit_types:r(any()), atom() | binary()) ->
-            rabbit_types:connection_exit().
--spec dirty_read({atom(), any()}) ->
-          rabbit_types:ok_or_error2(any(), 'not_found').
--spec table_lookup(rabbit_framing:amqp_table(), binary()) ->
-          'undefined' | {rabbit_framing:amqp_field_type(), any()}.
--spec set_table_value
-        (rabbit_framing:amqp_table(), binary(), rabbit_framing:amqp_field_type(),
-         rabbit_framing:amqp_value()) ->
-            rabbit_framing:amqp_table().
--spec r(rabbit_types:vhost(), K) ->
-          rabbit_types:r3(rabbit_types:vhost(), K, '_')
-          when is_subtype(K, atom()).
--spec r(rabbit_types:vhost() | rabbit_types:r(atom()), K, resource_name()) ->
-          rabbit_types:r3(rabbit_types:vhost(), K, resource_name())
-          when is_subtype(K, atom()).
--spec r_arg
+                                 rabbit_types:connection_exit()).
+-spec(dirty_read/1 ::
+        ({atom(), any()}) -> rabbit_types:ok_or_error2(any(), 'not_found')).
+-spec(table_lookup/2 ::
+        (rabbit_framing:amqp_table(), binary())
+        -> 'undefined' | {rabbit_framing:amqp_field_type(), any()}).
+-spec(set_table_value/4 ::
+        (rabbit_framing:amqp_table(), binary(),
+         rabbit_framing:amqp_field_type(), rabbit_framing:amqp_value())
+        -> rabbit_framing:amqp_table()).
+-spec(r/2 :: (rabbit_types:vhost(), K)
+             -> rabbit_types:r3(rabbit_types:vhost(), K, '_')
+                    when is_subtype(K, atom())).
+-spec(r/3 ::
+        (rabbit_types:vhost() | rabbit_types:r(atom()), K, resource_name())
+        -> rabbit_types:r3(rabbit_types:vhost(), K, resource_name())
+               when is_subtype(K, atom())).
+-spec(r_arg/4 ::
         (rabbit_types:vhost() | rabbit_types:r(atom()), K,
          rabbit_framing:amqp_table(), binary()) ->
-            undefined |
-            rabbit_types:error(
-              {invalid_type, rabbit_framing:amqp_field_type()}) |
-            rabbit_types:r(K) when is_subtype(K, atom()).
--spec rs(rabbit_types:r(atom())) -> string().
--spec enable_cover() -> ok_or_error().
--spec start_cover([{string(), string()} | string()]) -> 'ok'.
--spec report_cover() -> 'ok'.
--spec enable_cover([file:filename() | atom()]) -> ok_or_error().
--spec report_cover([file:filename() | atom()]) -> 'ok'.
--spec throw_on_error
-        (atom(), thunk(rabbit_types:error(any()) | {ok, A} | A)) -> A.
--spec with_exit_handler(thunk(A), thunk(A)) -> A.
--spec is_abnormal_exit(any()) -> boolean().
--spec filter_exit_map(fun ((A) -> B), [A]) -> [B].
--spec with_user(rabbit_types:username(), thunk(A)) -> A.
--spec with_user_and_vhost
-        (rabbit_types:username(), rabbit_types:vhost(), thunk(A)) -> A.
--spec execute_mnesia_transaction(thunk(A)) -> A.
--spec execute_mnesia_transaction(thunk(A), fun ((A, boolean()) -> B)) -> B.
--spec execute_mnesia_tx_with_tail
-        (thunk(fun ((boolean()) -> B))) -> B | (fun ((boolean()) -> B)).
--spec ensure_ok(ok_or_error(), atom()) -> 'ok'.
--spec tcp_name(atom(), inet:ip_address(), rabbit_networking:ip_port()) ->
-          atom().
--spec format_inet_error(atom()) -> string().
--spec upmap(fun ((A) -> B), [A]) -> [B].
--spec map_in_order(fun ((A) -> B), [A]) -> [B].
--spec table_filter
-        (fun ((A) -> boolean()), fun ((A, boolean()) -> 'ok'), atom()) -> [A].
--spec dirty_read_all(atom()) -> [any()].
--spec dirty_foreach_key(fun ((any()) -> any()), atom()) ->
-          'ok' | 'aborted'.
--spec dirty_dump_log(file:filename()) -> ok_or_error().
--spec format(string(), [any()]) -> string().
--spec format_many([{string(), [any()]}]) -> string().
--spec format_stderr(string(), [any()]) -> 'ok'.
--spec unfold (fun ((A) -> ({'true', B, A} | 'false')), A) -> {[B], A}.
--spec ceil(number()) -> integer().
--spec queue_fold(fun ((any(), B) -> B), B, queue:queue()) -> B.
--spec sort_field_table(rabbit_framing:amqp_table()) ->
-          rabbit_framing:amqp_table().
--spec pid_to_string(pid()) -> string().
--spec string_to_pid(string()) -> pid().
--spec pid_change_node(pid(), node()) -> pid().
--spec node_to_fake_pid(atom()) -> pid().
--spec version_compare(string(), string()) -> 'lt' | 'eq' | 'gt'.
--spec version_compare
-        (string(), string(), ('lt' | 'lte' | 'eq' | 'gte' | 'gt')) -> boolean().
--spec version_minor_equivalent(string(), string()) -> boolean().
--spec dict_cons(any(), any(), dict:dict()) -> dict:dict().
--spec orddict_cons(any(), any(), orddict:orddict()) -> orddict:orddict().
--spec gb_trees_cons(any(), any(), gb_trees:tree()) -> gb_trees:tree().
--spec gb_trees_fold(fun ((any(), any(), A) -> A), A, gb_trees:tree()) -> A.
--spec gb_trees_foreach(fun ((any(), any()) -> any()), gb_trees:tree()) ->
-          'ok'.
--spec all_module_attributes(atom()) -> [{atom(), atom(), [term()]}].
--spec build_acyclic_graph
-        (graph_vertex_fun(), graph_edge_fun(), [{atom(), [term()]}]) ->
-            rabbit_types:ok_or_error2(
-              digraph:graph(),
-              {'vertex', 'duplicate', digraph:vertex()} |
-              {'edge',
-                ({bad_vertex, digraph:vertex()} |
-                 {bad_edge, [digraph:vertex()]}),
-                digraph:vertex(), digraph:vertex()}).
--spec const(A) -> thunk(A).
--spec ntoa(inet:ip_address()) -> string().
--spec ntoab(inet:ip_address()) -> string().
--spec is_process_alive(pid()) -> boolean().
--spec pget(term(), [term()]) -> term().
--spec pget(term(), [term()], term()) -> term().
--spec pget_or_die(term(), [term()]) -> term() | no_return().
--spec pmerge(term(), term(), [term()]) -> [term()].
--spec plmerge([term()], [term()]) -> [term()].
--spec pset(term(), term(), [term()]) -> [term()].
--spec format_message_queue(any(), priority_queue_mq:q()) -> term().
--spec append_rpc_all_nodes([node()], atom(), atom(), [any()]) -> [any()].
--spec os_cmd(string()) -> string().
--spec is_os_process_alive(non_neg_integer()) -> boolean().
--spec gb_sets_difference(gb_sets:set(), gb_sets:set()) -> gb_sets:set().
--spec version() -> string().
--spec otp_release() -> string().
--spec which_applications() -> [{atom(), string(), string()}].
--spec sequence_error([({'error', any()} | any())]) ->
-          {'error', any()} | any().
--spec json_encode(any()) -> {'ok', string()} | {'error', any()}.
--spec json_decode(string()) -> {'ok', any()} | 'error'.
--spec json_to_term(any()) -> any().
--spec term_to_json(any()) -> any().
--spec check_expiry(integer()) -> rabbit_types:ok_or_error(any()).
--spec base64url(binary()) -> string().
--spec interval_operation
-        ({atom(), atom(), any()}, float(), non_neg_integer(), non_neg_integer(),
-         non_neg_integer()) ->
-            {any(), non_neg_integer()}.
--spec ensure_timer(A, non_neg_integer(), non_neg_integer(), any()) -> A.
--spec stop_timer(A, non_neg_integer()) -> A.
--spec send_after(non_neg_integer(), pid(), any()) -> tref().
--spec cancel_timer(tref()) -> 'ok'.
--spec get_parent() -> pid().
--spec store_proc_name(atom(), rabbit_types:proc_name()) -> ok.
--spec store_proc_name(rabbit_types:proc_type_and_name()) -> ok.
--spec get_proc_name() -> rabbit_types:proc_name().
--spec moving_average(float(), float(), float(), float() | 'undefined') ->
-          float().
--spec get_env(atom(), atom(), term())  -> term().
--spec get_channel_operation_timeout() -> non_neg_integer().
--spec random(non_neg_integer()) -> non_neg_integer().
--spec rpc_call(node(), atom(), atom(), [any()]) -> any().
--spec rpc_call(node(), atom(), atom(), [any()], number()) -> any().
--spec report_default_thread_pool_size() -> 'ok'.
--spec get_gc_info(pid()) -> integer().
+                      undefined |
+                      rabbit_types:error(
+                        {invalid_type, rabbit_framing:amqp_field_type()}) |
+                      rabbit_types:r(K) when is_subtype(K, atom())).
+-spec(rs/1 :: (rabbit_types:r(atom())) -> string()).
+-spec(enable_cover/0 :: () -> ok_or_error()).
+-spec(start_cover/1 :: ([{string(), string()} | string()]) -> 'ok').
+-spec(report_cover/0 :: () -> 'ok').
+-spec(enable_cover/1 :: ([file:filename() | atom()]) -> ok_or_error()).
+-spec(report_cover/1 :: ([file:filename() | atom()]) -> 'ok').
+-spec(throw_on_error/2 ::
+        (atom(), thunk(rabbit_types:error(any()) | {ok, A} | A)) -> A).
+-spec(with_exit_handler/2 :: (thunk(A), thunk(A)) -> A).
+-spec(is_abnormal_exit/1 :: (any()) -> boolean()).
+-spec(filter_exit_map/2 :: (fun ((A) -> B), [A]) -> [B]).
+-spec(with_user/2 :: (rabbit_types:username(), thunk(A)) -> A).
+-spec(with_user_and_vhost/3 ::
+        (rabbit_types:username(), rabbit_types:vhost(), thunk(A))
+        -> A).
+-spec(execute_mnesia_transaction/1 :: (thunk(A)) -> A).
+-spec(execute_mnesia_transaction/2 ::
+        (thunk(A), fun ((A, boolean()) -> B)) -> B).
+-spec(execute_mnesia_tx_with_tail/1 ::
+        (thunk(fun ((boolean()) -> B))) -> B | (fun ((boolean()) -> B))).
+-spec(ensure_ok/2 :: (ok_or_error(), atom()) -> 'ok').
+-spec(tcp_name/3 ::
+        (atom(), inet:ip_address(), rabbit_networking:ip_port())
+        -> atom()).
+-spec(format_inet_error/1 :: (atom()) -> string()).
+-spec(upmap/2 :: (fun ((A) -> B), [A]) -> [B]).
+-spec(map_in_order/2 :: (fun ((A) -> B), [A]) -> [B]).
+-spec(table_filter/3:: (fun ((A) -> boolean()), fun ((A, boolean()) -> 'ok'),
+                                                    atom()) -> [A]).
+-spec(dirty_read_all/1 :: (atom()) -> [any()]).
+-spec(dirty_foreach_key/2 :: (fun ((any()) -> any()), atom())
+                             -> 'ok' | 'aborted').
+-spec(dirty_dump_log/1 :: (file:filename()) -> ok_or_error()).
+-spec(format/2 :: (string(), [any()]) -> string()).
+-spec(format_many/1 :: ([{string(), [any()]}]) -> string()).
+-spec(format_stderr/2 :: (string(), [any()]) -> 'ok').
+-spec(unfold/2  :: (fun ((A) -> ({'true', B, A} | 'false')), A) -> {[B], A}).
+-spec(ceil/1 :: (number()) -> integer()).
+-spec(queue_fold/3 :: (fun ((any(), B) -> B), B, queue:queue()) -> B).
+-spec(sort_field_table/1 ::
+        (rabbit_framing:amqp_table()) -> rabbit_framing:amqp_table()).
+-spec(pid_to_string/1 :: (pid()) -> string()).
+-spec(string_to_pid/1 :: (string()) -> pid()).
+-spec(pid_change_node/2 :: (pid(), node()) -> pid()).
+-spec(node_to_fake_pid/1 :: (atom()) -> pid()).
+-spec(version_compare/2 :: (string(), string()) -> 'lt' | 'eq' | 'gt').
+-spec(version_compare/3 ::
+        (string(), string(), ('lt' | 'lte' | 'eq' | 'gte' | 'gt'))
+        -> boolean()).
+-spec(version_minor_equivalent/2 :: (string(), string()) -> boolean()).
+-spec(dict_cons/3 :: (any(), any(), dict:dict()) -> dict:dict()).
+-spec(orddict_cons/3 :: (any(), any(), orddict:orddict()) -> orddict:orddict()).
+-spec(gb_trees_cons/3 :: (any(), any(), gb_trees:tree()) -> gb_trees:tree()).
+-spec(gb_trees_fold/3 :: (fun ((any(), any(), A) -> A), A, gb_trees:tree())
+ -> A).
+-spec(gb_trees_foreach/2 ::
+        (fun ((any(), any()) -> any()), gb_trees:tree()) -> 'ok').
+-spec(all_module_attributes/1 ::
+        (atom()) -> [{atom(), atom(), [term()]}]).
+-spec(build_acyclic_graph/3 ::
+        (graph_vertex_fun(), graph_edge_fun(), [{atom(), [term()]}])
+        -> rabbit_types:ok_or_error2(digraph:graph(),
+                                     {'vertex', 'duplicate', digraph:vertex()} |
+                                     {'edge', ({bad_vertex, digraph:vertex()} |
+                                               {bad_edge, [digraph:vertex()]}),
+                                      digraph:vertex(), digraph:vertex()})).
+-spec(const/1 :: (A) -> thunk(A)).
+-spec(ntoa/1 :: (inet:ip_address()) -> string()).
+-spec(ntoab/1 :: (inet:ip_address()) -> string()).
+-spec(is_process_alive/1 :: (pid()) -> boolean()).
+-spec(pget/2 :: (term(), [term()]) -> term()).
+-spec(pget/3 :: (term(), [term()], term()) -> term()).
+-spec(pget_or_die/2 :: (term(), [term()]) -> term() | no_return()).
+-spec(pmerge/3 :: (term(), term(), [term()]) -> [term()]).
+-spec(plmerge/2 :: ([term()], [term()]) -> [term()]).
+-spec(pset/3 :: (term(), term(), [term()]) -> [term()]).
+-spec(format_message_queue/2 :: (any(), priority_queue_mq:q()) -> term()).
+-spec(append_rpc_all_nodes/4 :: ([node()], atom(), atom(), [any()]) -> [any()]).
+-spec(os_cmd/1 :: (string()) -> string()).
+-spec(is_os_process_alive/1 :: (non_neg_integer()) -> boolean()).
+-spec(gb_sets_difference/2 :: (gb_sets:set(), gb_sets:set()) -> gb_sets:set()).
+-spec(version/0 :: () -> string()).
+-spec(otp_release/0 :: () -> string()).
+-spec(which_applications/0 :: () -> [{atom(), string(), string()}]).
+-spec(sequence_error/1 :: ([({'error', any()} | any())])
+                       -> {'error', any()} | any()).
+-spec(json_encode/1 :: (any()) -> {'ok', string()} | {'error', any()}).
+-spec(json_decode/1 :: (string()) -> {'ok', any()} | 'error').
+-spec(json_to_term/1 :: (any()) -> any()).
+-spec(term_to_json/1 :: (any()) -> any()).
+-spec(check_expiry/1 :: (integer()) -> rabbit_types:ok_or_error(any())).
+-spec(base64url/1 :: (binary()) -> string()).
+-spec(interval_operation/5 ::
+        ({atom(), atom(), any()}, float(), non_neg_integer(), non_neg_integer(), non_neg_integer())
+        -> {any(), non_neg_integer()}).
+-spec(ensure_timer/4 :: (A, non_neg_integer(), non_neg_integer(), any()) -> A).
+-spec(stop_timer/2 :: (A, non_neg_integer()) -> A).
+-spec(send_after/3 :: (non_neg_integer(), pid(), any()) -> tref()).
+-spec(cancel_timer/1 :: (tref()) -> 'ok').
+-spec(get_parent/0 :: () -> pid()).
+-spec(store_proc_name/2 :: (atom(), rabbit_types:proc_name()) -> ok).
+-spec(store_proc_name/1 :: (rabbit_types:proc_type_and_name()) -> ok).
+-spec(moving_average/4 :: (float(), float(), float(), float() | 'undefined')
+                          -> float()).
+-spec(get_env/3 :: (atom(), atom(), term())  -> term()).
+-spec(get_channel_operation_timeout/0 :: () -> non_neg_integer()).
+-spec(random/1 :: (non_neg_integer()) -> non_neg_integer()).
+-spec(rpc_call/4 :: (node(), atom(), atom(), [any()]) -> any()).
+-spec(rpc_call/5 :: (node(), atom(), atom(), [any()], number()) -> any()).
+-spec(rpc_call/7 :: (node(), atom(), atom(), [any()], reference(), pid(),
+                     number()) -> any()).
+-spec(report_default_thread_pool_size/0 :: () -> 'ok').
+
+-endif.
 
 %%----------------------------------------------------------------------------
 
@@ -690,9 +697,6 @@ queue_fold(Fun, Init, Q) ->
 sort_field_table(Arguments) ->
     lists:keysort(1, Arguments).
 
-atom_to_binary(A) ->
-    list_to_binary(atom_to_list(A)).
-
 %% This provides a string representation of a pid that is the same
 %% regardless of what node we are running on. The representation also
 %% permits easy identification of the pid's node.
@@ -1016,11 +1020,10 @@ otp_release() ->
 
 %% application:which_applications(infinity) is dangerous, since it can
 %% cause deadlocks on shutdown. So we have to use a timeout variant,
-%% but w/o creating spurious timeout errors. The timeout value is twice
-%% that of gen_server:call/2.
+%% but w/o creating spurious timeout errors.
 which_applications() ->
     try
-        application:which_applications(10000)
+        application:which_applications()
     catch
         exit:{timeout, _} -> []
     end.
@@ -1123,14 +1126,6 @@ cancel_timer({timer, Ref})  -> {ok, cancel} = timer:cancel(Ref),
 store_proc_name(Type, ProcName) -> store_proc_name({Type, ProcName}).
 store_proc_name(TypeProcName)   -> put(process_name, TypeProcName).
 
-get_proc_name() ->
-    case get(process_name) of
-        undefined ->
-            undefined;
-        {_Type, Name} ->
-            {ok, Name}
-    end.
-
 %% application:get_env/3 is only available in R16B01 or later.
 get_env(Application, Key, Def) ->
     case application:get_env(Application, Key) of
@@ -1165,7 +1160,14 @@ moving_average(Time,  HalfLife,  Next, Current) ->
     Next * (1 - Weight) + Current * Weight.
 
 random(N) ->
-    rand:uniform(N).
+    case get(random_seed) of
+        undefined ->
+            random:seed(erlang:phash2([node()]),
+                        time_compat:monotonic_time(),
+                        time_compat:unique_integer());
+        _ -> ok
+    end,
+    random:uniform(N).
 
 %% Moved from rabbit/src/rabbit_cli.erl
 %% If the server we are talking to has non-standard net_ticktime, and
@@ -1181,6 +1183,9 @@ rpc_call(Node, Mod, Fun, Args, Timeout) ->
         Time            -> net_kernel:set_net_ticktime(Time, 0),
                            rpc:call(Node, Mod, Fun, Args, Timeout)
     end.
+
+rpc_call(Node, Mod, Fun, Args, Ref, Pid, Timeout) ->
+    rpc_call(Node, Mod, Fun, Args++[Ref, Pid], Timeout).
 
 guess_number_of_cpu_cores() ->
     case erlang:system_info(logical_processors_available) of
@@ -1199,18 +1204,6 @@ report_default_thread_pool_size() ->
     io:format("~b", [guess_default_thread_pool_size()]),
     erlang:halt(0),
     ok.
-
-get_gc_info(Pid) ->
-    {garbage_collection, GC} = erlang:process_info(Pid, garbage_collection),
-    case proplists:get_value(max_heap_size, GC) of
-        I when is_integer(I) ->
-            GC;
-        undefined ->
-            GC;
-        Map ->
-            lists:keyreplace(max_heap_size, 1, GC,
-                             {max_heap_size, maps:get(size, Map)})
-    end.
 
 %% -------------------------------------------------------------------------
 %% Begin copypasta from gen_server3.erl

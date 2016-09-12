@@ -52,6 +52,8 @@
 %%    %% implementation using fallback solution
 %%    ..
 %%
+%% See `time_compat.erl` for an example.
+%%
 %% end
 %%----------------------------------------------------------------------------
 -spec update(atom()) -> ok | no_return().

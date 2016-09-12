@@ -20,6 +20,8 @@
 
 -export([added_to_rabbit_registry/2, removed_from_rabbit_registry/1]).
 
+-ifdef(use_specs).
+
 -type(tx() :: 'transaction' | 'none').
 -type(serial() :: pos_integer() | tx()).
 
@@ -68,10 +70,21 @@
                                   rabbit_framing:amqp_table()) ->
     'ok' | rabbit_types:connection_exit().
 
-%% Exchange type specific info keys
--callback info(rabbit_types:exchange()) -> [{atom(), term()}].
+-else.
 
--callback info(rabbit_types:exchange(), [atom()]) -> [{atom(), term()}].
+-export([behaviour_info/1]).
+
+behaviour_info(callbacks) ->
+    [{description, 0}, {serialise_events, 0}, {route, 2},
+     {validate, 1}, {validate_binding, 2}, {policy_changed, 2},
+     {create, 2}, {delete, 3}, {add_binding, 3}, {remove_bindings, 3},
+     {assert_args_equivalence, 2}];
+behaviour_info(_Other) ->
+    undefined.
+
+-endif.
 
 added_to_rabbit_registry(_Type, _ModuleName) -> ok.
 removed_from_rabbit_registry(_Type) -> ok.
+
+

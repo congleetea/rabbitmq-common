@@ -17,82 +17,36 @@
 -module(rabbit_ct_broker_helpers).
 
 -include_lib("common_test/include/ct.hrl").
--include_lib("kernel/include/inet.hrl").
--include("include/rabbit.hrl").
+-include_lib("rabbit_common/include/rabbit.hrl").
 
 -export([
     setup_steps/0,
     teardown_steps/0,
     start_rabbitmq_nodes/1,
     stop_rabbitmq_nodes/1,
-    rewrite_node_config_file/2,
-    cluster_nodes/1, cluster_nodes/2,
-
+    cluster_nodes/1,
     get_node_configs/1, get_node_configs/2,
-    get_node_config/2, get_node_config/3, set_node_config/3,
-    nodename_to_index/2,
-    node_uri/2, node_uri/3,
-
+    get_node_config/2, get_node_config/3,
     control_action/2, control_action/3, control_action/4,
-    rabbitmqctl/3, rabbitmqctl_list/3,
-
-    add_code_path_to_node/2,
-    add_code_path_to_all_nodes/2,
-    rpc/5, rpc/6,
-    rpc_all/4, rpc_all/5,
-
-    start_node/2,
-    start_broker/2,
-    restart_broker/2,
-    stop_broker/2,
-    restart_node/2,
-    stop_node/2,
-    stop_node_after/3,
-    kill_node/2,
-    kill_node_after/3,
-
-    set_partition_handling_mode/3,
-    set_partition_handling_mode_globally/2,
-    enable_dist_proxy_manager/1,
-    enable_dist_proxy/1,
-    enable_dist_proxy_on_node/3,
-    block_traffic_between/2,
-    allow_traffic_between/2,
-
+    control_action_t/3, control_action_t/4, control_action_t/5,
+    control_action_opts/1,
+    info_action/3, info_action_t/4,
+    add_code_path_to_broker/2,
+    add_code_path_to_all_brokers/2,
+    run_on_broker/4, run_on_broker/5,
+    run_on_broker_i/5, run_on_broker_i/6,
+    run_on_all_brokers/4,
+    restart_broker/1,
+    restart_broker_i/2,
+    stop_broker/1,
+    stop_broker_i/2,
+    kill_broker/1,
+    kill_broker_i/2,
     get_connection_pids/1,
     get_queue_sup_pid/1,
-
     set_policy/6,
     clear_policy/3,
-    set_operator_policy/6,
-    clear_operator_policy/3,
     set_ha_policy/4, set_ha_policy/5,
-    set_ha_policy_all/1,
-    set_ha_policy_two_pos/1,
-    set_ha_policy_two_pos_batch_sync/1,
-
-    set_parameter/5,
-    clear_parameter/4,
-
-    add_vhost/2,
-    add_vhost/3,
-    delete_vhost/2,
-    delete_vhost/3,
-
-    add_user/2,
-    add_user/4,
-
-    delete_user/2,
-    delete_user/3,
-
-    set_permissions/6,
-    set_permissions/7,
-    set_full_permissions/2,
-    set_full_permissions/3,
-    set_full_permissions/4,
-
-    enable_plugin/3,
-    disable_plugin/3,
 
     test_channel/0
   ]).
@@ -111,13 +65,7 @@
     tcp_port_amqp_tls,
     tcp_port_mgmt,
     tcp_port_erlang_dist,
-    tcp_port_erlang_dist_proxy,
-    tcp_port_mqtt,
-    tcp_port_mqtt_tls,
-    tcp_port_web_mqtt,
-    tcp_port_stomp,
-    tcp_port_stomp_tls,
-    tcp_port_web_stomp
+    tcp_port_erlang_dist_proxy
   ]).
 
 %% -------------------------------------------------------------------
@@ -126,7 +74,6 @@
 
 setup_steps() ->
     [
-      fun run_make_dist/1,
       fun start_rabbitmq_nodes/1,
       fun share_dist_and_proxy_ports_map/1
     ].
@@ -136,13 +83,6 @@ teardown_steps() ->
       fun stop_rabbitmq_nodes/1
     ].
 
-run_make_dist(Config) ->
-    SrcDir = ?config(current_srcdir, Config),
-    case rabbit_ct_helpers:make(Config, SrcDir, ["test-dist"]) of
-        {ok, _} -> Config;
-        _       -> {skip, "Failed to run \"make test-dist\""}
-    end.
-
 start_rabbitmq_nodes(Config) ->
     Config1 = rabbit_ct_helpers:set_config(Config, [
         {rmq_username, list_to_binary(?DEFAULT_USER)},
@@ -151,15 +91,11 @@ start_rabbitmq_nodes(Config) ->
         {rmq_vhost, <<"/">>},
         {rmq_channel_max, 0}]),
     NodesCount0 = rabbit_ct_helpers:get_config(Config1, rmq_nodes_count),
-    NodesCount = case NodesCount0 of
-        undefined                                -> 1;
-        N when is_integer(N) andalso N >= 1      -> N;
-        L when is_list(L) andalso length(L) >= 1 -> length(L)
-    end,
-    Clustered0 = rabbit_ct_helpers:get_config(Config1, rmq_nodes_clustered),
-    Clustered = case Clustered0 of
-        undefined            -> true;
-        C when is_boolean(C) -> C
+    {NodesCount, Clustered} = case NodesCount0 of
+        undefined ->
+            {1, false};
+        {N, C} when is_integer(N) andalso N >= 1 andalso is_boolean(C) ->
+            {N, C}
     end,
     Master = self(),
     Starters = [
@@ -169,26 +105,53 @@ start_rabbitmq_nodes(Config) ->
     wait_for_rabbitmq_nodes(Config1, Starters, [], Clustered).
 
 wait_for_rabbitmq_nodes(Config, [], NodeConfigs, Clustered) ->
-    NodeConfigs1 = [NC || {_, NC} <- lists:keysort(1, NodeConfigs)],
+    NodeConfigs1 = lists:sort(
+    fun(NodeConfigA, NodeConfigB) ->
+        NodeA = ?config(rmq_nodename, NodeConfigA),
+        NodeB = ?config(rmq_nodename, NodeConfigB),
+        NodeA =< NodeB
+    end, NodeConfigs),
     Config1 = rabbit_ct_helpers:set_config(Config, {rmq_nodes, NodeConfigs1}),
     if
-        Clustered -> cluster_nodes(Config1);
-        true      -> Config1
+        Clustered ->
+            Rabbitmqctl = ?config(rabbitmqctl_cmd, Config),
+            Nodename = ?config(rmq_nodename, hd(NodeConfigs1)),
+            Cmd = Rabbitmqctl ++ " -n \"" ++ atom_to_list(Nodename) ++ "\"" ++
+            " cluster_status",
+            case rabbit_ct_helpers:run_cmd(Cmd) of
+                true ->
+                    Config1;
+                false ->
+                    stop_rabbitmq_nodes(Config1),
+                    {skip, "Could not confirm cluster was up and running"}
+            end;
+        true ->
+            Config1
     end;
 wait_for_rabbitmq_nodes(Config, Starting, NodeConfigs, Clustered) ->
     receive
         {_, {skip, _} = Error} ->
-            NodeConfigs1 = [NC || {_, NC} <- NodeConfigs],
             Config1 = rabbit_ct_helpers:set_config(Config,
-              {rmq_nodes, NodeConfigs1}),
+              {rmq_nodes, NodeConfigs}),
             stop_rabbitmq_nodes(Config1),
             Error;
-        {Pid, I, NodeConfig} when NodeConfigs =:= [] ->
+        {Pid, NodeConfig} when NodeConfigs =:= [] ->
             wait_for_rabbitmq_nodes(Config, Starting -- [Pid],
-              [{I, NodeConfig} | NodeConfigs], Clustered);
-        {Pid, I, NodeConfig} ->
+              [NodeConfig | NodeConfigs], Clustered);
+        {Pid, NodeConfig} when not Clustered ->
             wait_for_rabbitmq_nodes(Config, Starting -- [Pid],
-              [{I, NodeConfig} | NodeConfigs], Clustered)
+              [NodeConfig | NodeConfigs], Clustered);
+        {Pid, NodeConfig} when Clustered ->
+            case cluster_nodes(Config, NodeConfig, hd(NodeConfigs)) of
+                ok ->
+                    wait_for_rabbitmq_nodes(Config, Starting -- [Pid],
+                      [NodeConfig | NodeConfigs], Clustered);
+                {skip, _} = Error ->
+                    Config1 = rabbit_ct_helpers:set_config(Config,
+                      {rmq_nodes, [NodeConfig | NodeConfigs]}),
+                    stop_rabbitmq_nodes(Config1),
+                    Error
+            end
     end.
 
 %% To start a RabbitMQ node, we need to:
@@ -203,7 +166,8 @@ wait_for_rabbitmq_nodes(Config, Starting, NodeConfigs, Clustered) ->
 %% generated.
 
 start_rabbitmq_node(Master, Config, NodeConfig, I) ->
-    Attempts0 = rabbit_ct_helpers:get_config(NodeConfig, failed_boot_attempts),
+    Attempts0 = rabbit_ct_helpers:get_config(NodeConfig,
+      rmq_failed_boot_attempts),
     Attempts = case Attempts0 of
         undefined -> 0;
         N         -> N
@@ -225,10 +189,10 @@ start_rabbitmq_node(Master, Config, NodeConfig, I) ->
             %% Try again with another TCP port numbers base.
             NodeConfig4 = move_nonworking_nodedir_away(NodeConfig3),
             NodeConfig5 = rabbit_ct_helpers:set_config(NodeConfig4,
-              {failed_boot_attempts, Attempts + 1}),
+              {rmq_failed_boot_attempts, Attempts + 1}),
             start_rabbitmq_node(Master, Config, NodeConfig5, I);
         NodeConfig4 ->
-            Master ! {self(), I, NodeConfig4},
+            Master ! {self(), NodeConfig4},
             unlink(Master)
     end.
 
@@ -251,14 +215,9 @@ init_tcp_port_numbers(Config, NodeConfig, I) ->
     %% no registered service around this port in /etc/services. And it
     %% should be far enough away from the default ephemeral TCP ports
     %% range.
-    ExtraPorts = case rabbit_ct_helpers:get_config(Config, rmq_extra_tcp_ports) of
-        undefined           -> [];
-        EP when is_list(EP) -> EP
-    end,
-    PortsCount = length(?TCP_PORTS_LIST) + length(ExtraPorts),
     Base = case rabbit_ct_helpers:get_config(NodeConfig, tcp_ports_base) of
-        undefined -> tcp_port_base_for_broker(Config, I, PortsCount);
-        P         -> P + PortsCount
+        undefined -> tcp_port_base_for_broker(Config, I);
+        P         -> P + length(?TCP_PORTS_LIST)
     end,
     NodeConfig1 = rabbit_ct_helpers:set_config(NodeConfig,
       {tcp_ports_base, Base}),
@@ -270,25 +229,22 @@ init_tcp_port_numbers(Config, NodeConfig, I) ->
             NextPort + 1
           }
       end,
-      {NodeConfig1, Base}, ?TCP_PORTS_LIST ++ ExtraPorts),
+      {NodeConfig1, Base}, ?TCP_PORTS_LIST),
     %% Finally, update the RabbitMQ configuration with the computed TCP
-    %% port numbers. Extra TCP ports are not added automatically to the
-    %% configuration.
+    %% port numbers.
     update_tcp_ports_in_rmq_config(NodeConfig2, ?TCP_PORTS_LIST).
 
-tcp_port_base_for_broker(Config, I, PortsCount) ->
+tcp_port_base_for_broker(Config, I) ->
     Base = case rabbit_ct_helpers:get_config(Config, tcp_ports_base) of
-        undefined ->
-            ?TCP_PORTS_BASE;
-        {skip_n_nodes, N} ->
-            tcp_port_base_for_broker1(?TCP_PORTS_BASE, N, PortsCount);
-        B ->
-            B
+        undefined         -> ?TCP_PORTS_BASE;
+        {skip_n_nodes, N} -> tcp_port_base_for_broker1(?TCP_PORTS_BASE, N);
+        B                 -> B
     end,
-    tcp_port_base_for_broker1(Base, I, PortsCount).
+    tcp_port_base_for_broker1(Base, I).
 
-tcp_port_base_for_broker1(Base, I, PortsCount) ->
-    Base + I * PortsCount * ?NODE_START_ATTEMPTS.
+tcp_port_base_for_broker1(Base, I) ->
+    Count = length(?TCP_PORTS_LIST),
+    Base + I * Count * ?NODE_START_ATTEMPTS.
 
 update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_amqp = Key | Rest]) ->
     NodeConfig1 = rabbit_ct_helpers:merge_app_env(NodeConfig,
@@ -302,30 +258,6 @@ update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_mgmt = Key | Rest]) ->
     NodeConfig1 = rabbit_ct_helpers:merge_app_env(NodeConfig,
       {rabbitmq_management, [{listener, [{port, ?config(Key, NodeConfig)}]}]}),
     update_tcp_ports_in_rmq_config(NodeConfig1, Rest);
-update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_mqtt = Key | Rest]) ->
-    NodeConfig1 = rabbit_ct_helpers:merge_app_env(NodeConfig,
-      {rabbitmq_mqtt, [{tcp_listeners, [?config(Key, NodeConfig)]}]}),
-    update_tcp_ports_in_rmq_config(NodeConfig1, Rest);
-update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_mqtt_tls = Key | Rest]) ->
-    NodeConfig1 = rabbit_ct_helpers:merge_app_env(NodeConfig,
-      {rabbitmq_mqtt, [{ssl_listeners, [?config(Key, NodeConfig)]}]}),
-    update_tcp_ports_in_rmq_config(NodeConfig1, Rest);
-update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_web_mqtt = Key | Rest]) ->
-    NodeConfig1 = rabbit_ct_helpers:merge_app_env(NodeConfig,
-      {rabbitmq_web_mqtt, [{tcp_config, [{port, ?config(Key, NodeConfig)}]}]}),
-    update_tcp_ports_in_rmq_config(NodeConfig1, Rest);
-update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_web_stomp = Key | Rest]) ->
-    NodeConfig1 = rabbit_ct_helpers:merge_app_env(NodeConfig,
-      {rabbitmq_web_stomp, [{tcp_config, [{port, ?config(Key, NodeConfig)}]}]}),
-    update_tcp_ports_in_rmq_config(NodeConfig1, Rest);
-update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_stomp = Key | Rest]) ->
-    NodeConfig1 = rabbit_ct_helpers:merge_app_env(NodeConfig,
-      {rabbitmq_stomp, [{tcp_listeners, [?config(Key, NodeConfig)]}]}),
-    update_tcp_ports_in_rmq_config(NodeConfig1, Rest);
-update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_stomp_tls = Key | Rest]) ->
-    NodeConfig1 = rabbit_ct_helpers:merge_app_env(NodeConfig,
-      {rabbitmq_stomp, [{ssl_listeners, [?config(Key, NodeConfig)]}]}),
-    update_tcp_ports_in_rmq_config(NodeConfig1, Rest);
 update_tcp_ports_in_rmq_config(NodeConfig, [tcp_port_erlang_dist | Rest]) ->
     %% The Erlang distribution port doesn't appear in the configuration file.
     update_tcp_ports_in_rmq_config(NodeConfig, Rest);
@@ -336,31 +268,20 @@ update_tcp_ports_in_rmq_config(NodeConfig, []) ->
     NodeConfig.
 
 init_nodename(Config, NodeConfig, I) ->
-    Nodename0 = case rabbit_ct_helpers:get_config(Config, rmq_nodes_count) of
-        NodesList when is_list(NodesList) ->
-            Name = lists:nth(I + 1, NodesList),
-            rabbit_misc:format("~s@localhost", [Name]);
-        _ ->
-            Base = ?config(tcp_ports_base, NodeConfig),
-            Suffix0 = rabbit_ct_helpers:get_config(Config,
-              rmq_nodename_suffix),
-            Suffix = case Suffix0 of
-                undefined               -> "";
-                _ when is_atom(Suffix0) -> [$- | atom_to_list(Suffix0)];
-                _                       -> [$- | Suffix0]
-            end,
-            rabbit_misc:format("rmq-ct~s-~b-~b@localhost",
-              [Suffix, I + 1, Base])
+    Base = ?config(tcp_ports_base, NodeConfig),
+    Suffix0 = rabbit_ct_helpers:get_config(Config, rmq_nodename_suffix),
+    Suffix = case Suffix0 of
+        undefined               -> "";
+        _ when is_atom(Suffix0) -> [$- | atom_to_list(Suffix0)];
+        _                       -> [$- | Suffix0]
     end,
-    Nodename = list_to_atom(Nodename0),
-    rabbit_ct_helpers:set_config(NodeConfig, [
-        {nodename, Nodename},
-        {initial_nodename, Nodename}
-      ]).
+    Nodename = list_to_atom(
+      rabbit_misc:format("rmq-ct~s-~b-~b@localhost", [Suffix, I + 1, Base])),
+    rabbit_ct_helpers:set_config(NodeConfig, {rmq_nodename, Nodename}).
 
 init_config_filename(Config, NodeConfig, _I) ->
     PrivDir = ?config(priv_dir, Config),
-    Nodename = ?config(nodename, NodeConfig),
+    Nodename = ?config(rmq_nodename, NodeConfig),
     ConfigDir = filename:join(PrivDir, Nodename),
     ConfigFile = filename:join(ConfigDir, Nodename),
     rabbit_ct_helpers:set_config(NodeConfig,
@@ -376,7 +297,8 @@ write_config_file(Config, NodeConfig, _I) ->
     ConfigDir = filename:dirname(ConfigFile),
     Ret1 = file:make_dir(ConfigDir),
     Ret2 = file:write_file(ConfigFile ++ ".config",
-      io_lib:format("% vim:ft=erlang:~n~n~p.~n", [ErlangConfig])),
+                          io_lib:format("% vim:ft=erlang:~n~n~p.~n",
+                                        [ErlangConfig])),
     case {Ret1, Ret2} of
         {ok, ok} ->
             NodeConfig;
@@ -390,20 +312,11 @@ write_config_file(Config, NodeConfig, _I) ->
              ConfigFile ++ "\": " ++ file:format_error(Reason)}
     end.
 
-do_start_rabbitmq_node(Config, NodeConfig, I) ->
-    WithPlugins0 = rabbit_ct_helpers:get_config(Config,
-      broker_with_plugins),
-    WithPlugins = case is_list(WithPlugins0) of
-        true  -> lists:nth(I + 1, WithPlugins0);
-        false -> WithPlugins0
-    end,
-    SrcDir = case WithPlugins of
-        false -> ?config(rabbit_srcdir, Config);
-        _     -> ?config(current_srcdir, Config)
-    end,
+do_start_rabbitmq_node(Config, NodeConfig, _I) ->
+    Make = ?config(make_cmd, Config),
+    SrcDir = ?config(rabbit_srcdir, Config),
     PrivDir = ?config(priv_dir, Config),
-    Nodename = ?config(nodename, NodeConfig),
-    InitialNodename = ?config(initial_nodename, NodeConfig),
+    Nodename = ?config(rmq_nodename, NodeConfig),
     DistPort = ?config(tcp_port_erlang_dist, NodeConfig),
     ConfigFile = ?config(erlang_node_config_filename, NodeConfig),
     %% Use inet_proxy_dist to handle distribution. This is used by the
@@ -438,40 +351,20 @@ do_start_rabbitmq_node(Config, NodeConfig, I) ->
             end,
             StartArgs0 ++ " -kernel net_ticktime " ++ integer_to_list(Ticktime)
     end,
-    Cmd = ["start-background-broker",
-      {"RABBITMQ_NODENAME=~s", [Nodename]},
-      {"RABBITMQ_NODENAME_FOR_PATHS=~s", [InitialNodename]},
-      {"RABBITMQ_DIST_PORT=~b", [DistPort]},
-      {"RABBITMQ_CONFIG_FILE=~s", [ConfigFile]},
-      {"RABBITMQ_SERVER_START_ARGS=~s", [StartArgs1]},
-      {"TEST_TMPDIR=~s", [PrivDir]}],
-    case rabbit_ct_helpers:make(Config, SrcDir, Cmd) of
-        {ok, _} -> query_node(Config, NodeConfig);
-        _       -> {skip, "Failed to initialize RabbitMQ"}
+    Cmd = Make ++ " -C " ++ SrcDir ++ rabbit_ct_helpers:make_verbosity() ++
+      " start-background-broker" ++
+      " RABBITMQ_NODENAME='" ++ atom_to_list(Nodename) ++ "'" ++
+      " RABBITMQ_DIST_PORT='" ++ integer_to_list(DistPort) ++ "'" ++
+      " RABBITMQ_CONFIG_FILE='" ++ ConfigFile ++ "'" ++
+      " RABBITMQ_SERVER_START_ARGS='" ++ StartArgs1 ++ "'" ++
+      " TEST_TMPDIR='" ++ PrivDir ++ "'",
+    case rabbit_ct_helpers:run_cmd(Cmd) of
+        true  -> NodeConfig;
+        false -> {skip, "Failed to initialize RabbitMQ"}
     end.
-
-query_node(Config, NodeConfig) ->
-    Nodename = ?config(nodename, NodeConfig),
-    PidFile = rpc(Config, Nodename, os, getenv, ["RABBITMQ_PID_FILE"]),
-    MnesiaDir = rpc(Config, Nodename, mnesia, system_info, [directory]),
-    {ok, PluginsDir} = rpc(Config, Nodename, application, get_env,
-      [rabbit, plugins_dir]),
-    {ok, EnabledPluginsFile} = rpc(Config, Nodename, application, get_env,
-      [rabbit, enabled_plugins_file]),
-    rabbit_ct_helpers:set_config(NodeConfig, [
-        {pid_file, PidFile},
-        {mnesia_dir, MnesiaDir},
-        {plugins_dir, PluginsDir},
-        {enabled_plugins_file, EnabledPluginsFile}
-      ]).
 
 cluster_nodes(Config) ->
     [NodeConfig1 | NodeConfigs] = get_node_configs(Config),
-    cluster_nodes1(Config, NodeConfig1, NodeConfigs).
-
-cluster_nodes(Config, Nodes) ->
-    [NodeConfig1 | NodeConfigs] = [
-      get_node_config(Config, Node) || Node <- Nodes],
     cluster_nodes1(Config, NodeConfig1, NodeConfigs).
 
 cluster_nodes1(Config, NodeConfig1, [NodeConfig2 | Rest]) ->
@@ -483,24 +376,22 @@ cluster_nodes1(Config, _, []) ->
     Config.
 
 cluster_nodes(Config, NodeConfig1, NodeConfig2) ->
-    Nodename1 = ?config(nodename, NodeConfig1),
-    Nodename2 = ?config(nodename, NodeConfig2),
-    Cmds = [
-      ["stop_app"],
-      ["join_cluster", Nodename2],
-      ["start_app"]
-    ],
-    cluster_nodes1(Config, Nodename1, Nodename2, Cmds).
-
-cluster_nodes1(Config, Nodename1, Nodename2, [Cmd | Rest]) ->
-    case rabbitmqctl(Config, Nodename1, Cmd) of
-        {ok, _} -> cluster_nodes1(Config, Nodename1, Nodename2, Rest);
-        _       -> {skip,
-                    "Failed to cluster nodes \"" ++ atom_to_list(Nodename1) ++
-                    "\" and \"" ++ atom_to_list(Nodename2) ++ "\""}
-    end;
-cluster_nodes1(_, _, _, []) ->
-    ok.
+    Rabbitmqctl = ?config(rabbitmqctl_cmd, Config),
+    Nodename1 = ?config(rmq_nodename, NodeConfig1),
+    Nodename2 = ?config(rmq_nodename, NodeConfig2),
+    Cmd =
+      Rabbitmqctl ++ " -n \"" ++ atom_to_list(Nodename1) ++ "\"" ++
+      " stop_app && " ++
+      Rabbitmqctl ++ " -n \"" ++ atom_to_list(Nodename1) ++ "\"" ++
+      " join_cluster \"" ++ atom_to_list(Nodename2) ++ "\" && " ++
+      Rabbitmqctl ++ " -n \"" ++ atom_to_list(Nodename1) ++ "\"" ++
+      " start_app",
+    case rabbit_ct_helpers:run_cmd(Cmd) of
+        true  -> ok;
+        false -> {skip,
+                  "Failed to cluster nodes \"" ++ atom_to_list(Nodename1) ++
+                  "\" and \"" ++ atom_to_list(Nodename2) ++ "\""}
+    end.
 
 move_nonworking_nodedir_away(NodeConfig) ->
     ConfigFile = ?config(erlang_node_config_filename, NodeConfig),
@@ -517,46 +408,9 @@ share_dist_and_proxy_ports_map(Config) ->
         ?config(tcp_port_erlang_dist, NodeConfig),
         ?config(tcp_port_erlang_dist_proxy, NodeConfig)
       } || NodeConfig <- get_node_configs(Config)],
-    rpc_all(Config,
+    run_on_all_brokers(Config,
       application, set_env, [kernel, dist_and_proxy_ports_map, Map]),
     Config.
-
-rewrite_node_config_file(Config, Node) ->
-    NodeConfig = get_node_config(Config, Node),
-    I = if
-        is_integer(Node) -> Node;
-        true             -> nodename_to_index(Config, Node)
-    end,
-    %% Keep copies of previous config file.
-    ConfigFile = ?config(erlang_node_config_filename, NodeConfig),
-    case rotate_config_file(ConfigFile) of
-        ok ->
-            ok;
-        {error, Reason} ->
-            ct:pal("Failed to rotate config file ~s: ~s",
-              [ConfigFile, file:format_error(Reason)])
-    end,
-    %% Now we can write the new file. The caller is responsible for
-    %% restarting the broker/node.
-    case write_config_file(Config, NodeConfig, I) of
-        {skip, Error} -> {error, Error};
-        _NodeConfig1  -> ok
-    end.
-
-rotate_config_file(ConfigFile) ->
-    rotate_config_file(ConfigFile, ConfigFile ++ ".config", 1).
-
-rotate_config_file(ConfigFile, OldName, Ext) ->
-    NewName = rabbit_misc:format("~s.config.~b", [ConfigFile, Ext]),
-    case filelib:is_file(NewName) of
-        true  ->
-            case rotate_config_file(ConfigFile, NewName, Ext + 1) of
-                ok    -> file:rename(OldName, NewName);
-                Error -> Error
-            end;
-        false ->
-            file:rename(OldName, NewName)
-    end.
 
 stop_rabbitmq_nodes(Config) ->
     NodeConfigs = get_node_configs(Config),
@@ -564,99 +418,104 @@ stop_rabbitmq_nodes(Config) ->
     proplists:delete(rmq_nodes, Config).
 
 stop_rabbitmq_node(Config, NodeConfig) ->
-    SrcDir = ?config(current_srcdir, Config),
+    Make = ?config(make_cmd, Config),
+    SrcDir = ?config(rabbit_srcdir, Config),
     PrivDir = ?config(priv_dir, Config),
-    Nodename = ?config(nodename, NodeConfig),
-    InitialNodename = ?config(initial_nodename, NodeConfig),
-    Cmd = ["stop-rabbit-on-node", "stop-node",
-      {"RABBITMQ_NODENAME=~s", [Nodename]},
-      {"RABBITMQ_NODENAME_FOR_PATHS=~s", [InitialNodename]},
-      {"TEST_TMPDIR=~s", [PrivDir]}],
-    rabbit_ct_helpers:make(Config, SrcDir, Cmd),
+    Nodename = ?config(rmq_nodename, NodeConfig),
+    Cmd = Make ++ " -C " ++ SrcDir ++ rabbit_ct_helpers:make_verbosity() ++
+      " stop-rabbit-on-node stop-node" ++
+      " RABBITMQ_NODENAME='" ++ atom_to_list(Nodename) ++ "'" ++
+      " TEST_TMPDIR='" ++ PrivDir ++ "'",
+    rabbit_ct_helpers:run_cmd(Cmd),
     NodeConfig.
-
-%% -------------------------------------------------------------------
-%% Helpers for partition simulation
-%% -------------------------------------------------------------------
-
-enable_dist_proxy_manager(Config) ->
-    inet_tcp_proxy_manager:start(),
-    rabbit_ct_helpers:set_config(Config,
-      {erlang_dist_module, inet_proxy_dist}).
-
-enable_dist_proxy(Config) ->
-    NodeConfigs = rabbit_ct_broker_helpers:get_node_configs(Config),
-    Nodes = [?config(nodename, NodeConfig) || NodeConfig <- NodeConfigs],
-    ManagerNode = node(),
-    ok = lists:foreach(
-      fun(NodeConfig) ->
-          ok = rabbit_ct_broker_helpers:rpc(Config,
-            ?config(nodename, NodeConfig),
-            ?MODULE, enable_dist_proxy_on_node,
-            [NodeConfig, ManagerNode, Nodes])
-      end, NodeConfigs),
-    Config.
-
-enable_dist_proxy_on_node(NodeConfig, ManagerNode, Nodes) ->
-    Nodename = ?config(nodename, NodeConfig),
-    DistPort = ?config(tcp_port_erlang_dist, NodeConfig),
-    ProxyPort = ?config(tcp_port_erlang_dist_proxy, NodeConfig),
-    ok = inet_tcp_proxy:start(ManagerNode, DistPort, ProxyPort),
-    ok = inet_tcp_proxy:reconnect(Nodes -- [Nodename]).
-
-block_traffic_between(NodeA, NodeB) ->
-    rpc:call(NodeA, inet_tcp_proxy, block, [NodeB]),
-    rpc:call(NodeB, inet_tcp_proxy, block, [NodeA]).
-
-allow_traffic_between(NodeA, NodeB) ->
-    rpc:call(NodeA, inet_tcp_proxy, allow, [NodeB]),
-    rpc:call(NodeB, inet_tcp_proxy, allow, [NodeA]).
-
-set_partition_handling_mode_globally(Config, Mode) ->
-    rabbit_ct_broker_helpers:rpc_all(Config,
-      application, set_env, [rabbit, cluster_partition_handling, Mode]).
-
-set_partition_handling_mode(Config, Nodes, Mode) ->
-    rabbit_ct_broker_helpers:rpc(Config, Nodes,
-      application, set_env, [rabbit, cluster_partition_handling, Mode]).
 
 %% -------------------------------------------------------------------
 %% Calls to rabbitmqctl from Erlang.
 %% -------------------------------------------------------------------
 
-control_action(Command, Node) ->
-    control_action(Command, Node, [], []).
+control_action(Command, Args) ->
+    control_action(Command, node(), Args, default_options()).
 
-control_action(Command, Node, Args) ->
-    control_action(Command, Node, Args, []).
+control_action(Command, Args, NewOpts) ->
+    control_action(Command, node(), Args,
+                   expand_options(default_options(), NewOpts)).
 
 control_action(Command, Node, Args, Opts) ->
-    rpc:call(Node, rabbit_control_main, action,
-             [Command, Node, Args, Opts,
-              fun (F, A) ->
-                      error_logger:info_msg(F ++ "~n", A)
-              end]).
+    case catch rabbit_control_main:action(
+                 Command, Node, Args, Opts,
+                 fun (Format, Args1) ->
+                         io:format(Format ++ " ...~n", Args1)
+                 end) of
+        ok ->
+            io:format("done.~n"),
+            ok;
+        {ok, Result} ->
+            rabbit_control_misc:print_cmd_result(Command, Result),
+            ok;
+        Other ->
+            io:format("failed.~n"),
+            Other
+    end.
 
-%% Use rabbitmqctl(1) instead of using the Erlang API.
+control_action_t(Command, Args, Timeout) when is_number(Timeout) ->
+    control_action_t(Command, node(), Args, default_options(), Timeout).
 
-rabbitmqctl(Config, Node, Args) ->
-    Rabbitmqctl = ?config(rabbitmqctl_cmd, Config),
-    NodeConfig = get_node_config(Config, Node),
-    Nodename = ?config(nodename, NodeConfig),
-    Env = [
-      {"RABBITMQ_PID_FILE", ?config(pid_file, NodeConfig)},
-      {"RABBITMQ_MNESIA_DIR", ?config(mnesia_dir, NodeConfig)},
-      {"RABBITMQ_PLUGINS_DIR", ?config(plugins_dir, NodeConfig)},
-      {"RABBITMQ_ENABLED_PLUGINS_FILE",
-        ?config(enabled_plugins_file, NodeConfig)}
-    ],
-    Cmd = [Rabbitmqctl, "-n", Nodename | Args],
-    rabbit_ct_helpers:exec(Cmd, [{env, Env}]).
+control_action_t(Command, Args, NewOpts, Timeout) when is_number(Timeout) ->
+    control_action_t(Command, node(), Args,
+                     expand_options(default_options(), NewOpts),
+                     Timeout).
 
-rabbitmqctl_list(Config, Node, Args) ->
-    {ok, StdOut} = rabbitmqctl(Config, Node, Args),
-    [<<"Listing", _/binary>>|Rows] = re:split(StdOut, <<"\n">>, [trim]),
-    [re:split(Row, <<"\t">>) || Row <- Rows].
+control_action_t(Command, Node, Args, Opts, Timeout) when is_number(Timeout) ->
+    case catch rabbit_control_main:action(
+                 Command, Node, Args, Opts,
+                 fun (Format, Args1) ->
+                         io:format(Format ++ " ...~n", Args1)
+                 end, Timeout) of
+        ok ->
+            io:format("done.~n"),
+            ok;
+        Other ->
+            io:format("failed.~n"),
+            Other
+    end.
+
+control_action_opts(Raw) ->
+    NodeStr = atom_to_list(node()),
+    case rabbit_control_main:parse_arguments(Raw, NodeStr) of
+        {ok, {Cmd, Opts, Args}} ->
+            case control_action(Cmd, node(), Args, Opts) of
+                ok    -> ok;
+                Error -> Error
+            end;
+        Error ->
+            Error
+    end.
+
+info_action(Command, Args, CheckVHost) ->
+    ok = control_action(Command, []),
+    if CheckVHost -> ok = control_action(Command, [], ["-p", "/"]);
+       true       -> ok
+    end,
+    ok = control_action(Command, lists:map(fun atom_to_list/1, Args)),
+    {bad_argument, dummy} = control_action(Command, ["dummy"]),
+    ok.
+
+info_action_t(Command, Args, CheckVHost, Timeout) when is_number(Timeout) ->
+    if CheckVHost -> ok = control_action_t(Command, [], ["-p", "/"], Timeout);
+       true       -> ok
+    end,
+    ok = control_action_t(Command, lists:map(fun atom_to_list/1, Args), Timeout),
+    ok.
+
+default_options() -> [{"-p", "/"}, {"-q", "false"}].
+
+expand_options(As, Bs) ->
+    lists:foldl(fun({K, _}=A, R) ->
+                        case proplists:is_defined(K, R) of
+                            true -> R;
+                            false -> [A | R]
+                        end
+                end, Bs, As).
 
 %% -------------------------------------------------------------------
 %% Other helpers.
@@ -669,164 +528,15 @@ get_node_configs(Config, Key) ->
     NodeConfigs = get_node_configs(Config),
     [?config(Key, NodeConfig) || NodeConfig <- NodeConfigs].
 
-get_node_config(Config, Node) when is_atom(Node) andalso Node =/= undefined ->
-    NodeConfigs = get_node_configs(Config),
-    get_node_config1(NodeConfigs, Node);
-get_node_config(Config, I) when is_integer(I) andalso I >= 0 ->
+get_node_config(Config, I) ->
     NodeConfigs = get_node_configs(Config),
     lists:nth(I + 1, NodeConfigs).
 
-get_node_config1([NodeConfig | Rest], Node) ->
-    case ?config(nodename, NodeConfig) of
-        Node -> NodeConfig;
-        _    -> case ?config(initial_nodename, NodeConfig) of
-                    Node -> NodeConfig;
-                    _    -> get_node_config1(Rest, Node)
-                end
-    end;
-get_node_config1([], Node) ->
-    exit({unknown_node, Node}).
-
-get_node_config(Config, Node, Key) ->
-    NodeConfig = get_node_config(Config, Node),
+get_node_config(Config, I, Key) ->
+    NodeConfig = get_node_config(Config, I),
     ?config(Key, NodeConfig).
 
-set_node_config(Config, Node, Tuples) ->
-    NodeConfig = get_node_config(Config, Node),
-    NodeConfig1 = rabbit_ct_helpers:set_config(NodeConfig, Tuples),
-    replace_entire_node_config(Config, Node, NodeConfig1).
-
-replace_entire_node_config(Config, Node, NewNodeConfig) ->
-    NodeConfigs = get_node_configs(Config),
-    NodeConfigs1 = lists:map(
-      fun(NodeConfig) ->
-          Match = case ?config(nodename, NodeConfig) of
-              Node -> true;
-              _    -> case ?config(initial_nodename, NodeConfig) of
-                      Node -> true;
-                      _    -> false
-                  end
-          end,
-          if
-              Match -> NewNodeConfig;
-              true  -> NodeConfig
-          end
-      end, NodeConfigs),
-    rabbit_ct_helpers:set_config(Config, {rmq_nodes, NodeConfigs1}).
-
-nodename_to_index(Config, Node) ->
-    NodeConfigs = get_node_configs(Config),
-    nodename_to_index1(NodeConfigs, Node, 0).
-
-nodename_to_index1([NodeConfig | Rest], Node, I) ->
-    case ?config(nodename, NodeConfig) of
-        Node -> I;
-        _    -> case ?config(initial_nodename, NodeConfig) of
-                    Node -> I;
-                    _    -> nodename_to_index1(Rest, Node, I + 1)
-                end
-    end;
-nodename_to_index1([], Node, _) ->
-    exit({unknown_node, Node}).
-
-node_uri(Config, Node) ->
-    node_uri(Config, Node, []).
-
-node_uri(Config, Node, amqp) ->
-    node_uri(Config, Node, []);
-node_uri(Config, Node, management) ->
-    node_uri(Config, Node, [
-        {scheme, "http"},
-        {tcp_port_name, tcp_port_mgmt}
-      ]);
-node_uri(Config, Node, Options) ->
-    Scheme = proplists:get_value(scheme, Options, "amqp"),
-    Hostname = case proplists:get_value(use_ipaddr, Options, false) of
-        true ->
-            {ok, Hostent} = inet:gethostbyname(?config(rmq_hostname, Config)),
-            format_ipaddr_for_uri(Hostent);
-        Family when Family =:= inet orelse Family =:= inet6 ->
-            {ok, Hostent} = inet:gethostbyname(?config(rmq_hostname, Config),
-              Family),
-            format_ipaddr_for_uri(Hostent);
-        false ->
-            ?config(rmq_hostname, Config)
-    end,
-    TcpPortName = proplists:get_value(tcp_port_name, Options, tcp_port_amqp),
-    TcpPort = get_node_config(Config, Node, TcpPortName),
-    UserPass = case proplists:get_value(with_user, Options, false) of
-        true ->
-            User = proplists:get_value(user, Options, "guest"),
-            Password = proplists:get_value(password, Options, "guest"),
-            io_lib:format("~s:~s@", [User, Password]);
-        false ->
-            ""
-    end,
-    list_to_binary(
-      rabbit_misc:format("~s://~s~s:~b",
-        [Scheme, UserPass, Hostname, TcpPort])).
-
-format_ipaddr_for_uri(
-  #hostent{h_addrtype = inet, h_addr_list = [IPAddr | _]}) ->
-    {A, B, C, D} = IPAddr,
-    io_lib:format("~b.~b.~b.~b", [A, B, C, D]);
-format_ipaddr_for_uri(
-  #hostent{h_addrtype = inet6, h_addr_list = [IPAddr | _]}) ->
-    {A, B, C, D, E, F, G, H} = IPAddr,
-    Res0 = io_lib:format(
-      "~.16b:~.16b:~.16b:~.16b:~.16b:~.16b:~.16b:~.16b",
-      [A, B, C, D, E, F, G, H]),
-    Res1 = re:replace(Res0, "(^0(:0)+$|^(0:)+|(:0)+$)|:(0:)+", "::"),
-    "[" ++ Res1 ++ "]".
-
-
-%% Virtual host management
-
-add_vhost(Config, VHost) ->
-    add_vhost(Config, 0, VHost).
-
-add_vhost(Config, Node, VHost) ->
-    rabbit_ct_broker_helpers:rpc(Config, Node, rabbit_vhost, add, [VHost]).
-
-delete_vhost(Config, VHost) ->
-    delete_vhost(Config, 0, VHost).
-
-delete_vhost(Config, Node, VHost) ->
-    rabbit_ct_broker_helpers:rpc(Config, Node, rabbit_vhost, delete, [VHost]).
-
-add_user(Config, Username) ->
-    %% for many tests it is convenient that
-    %% the username and password match
-    add_user(Config, 0, Username, Username).
-
-add_user(Config, Node, Username, Password) ->
-    rabbit_ct_broker_helpers:rpc(Config, Node, rabbit_auth_backend_internal, add_user, [Username, Password]).
-
-delete_user(Config, Username) ->
-    delete_user(Config, 0, Username).
-
-delete_user(Config, Node, Username) ->
-    rabbit_ct_broker_helpers:rpc(Config, Node, rabbit_auth_backend_internal, delete_user, [Username]).
-
-
-set_full_permissions(Config, VHost) ->
-    set_permissions(Config, 0, <<"guest">>, VHost, <<".*">>, <<".*">>, <<".*">>).
-set_full_permissions(Config, Username, VHost) ->
-    set_permissions(Config, 0, Username, VHost, <<".*">>, <<".*">>, <<".*">>).
-set_full_permissions(Config, Node, Username, VHost) ->
-    set_permissions(Config, Node, Username, VHost, <<".*">>, <<".*">>, <<".*">>).
-
-set_permissions(Config, Username, VHost, ConfigurePerm, WritePerm, ReadPerm) ->
-    set_permissions(Config, 0, Username, VHost, ConfigurePerm, WritePerm, ReadPerm).
-set_permissions(Config, Node, Username, VHost, ConfigurePerm, WritePerm, ReadPerm) ->
-    rabbit_ct_broker_helpers:rpc(Config, Node,
-                                 rabbit_auth_backend_internal,
-                                 set_permissions,
-                                 [Username, VHost, ConfigurePerm, WritePerm, ReadPerm]).
-
-%% Functions to execute code on a remote node/broker.
-
-add_code_path_to_node(Node, Module) ->
+add_code_path_to_broker(Node, Module) ->
     Path1 = filename:dirname(code:which(Module)),
     Path2 = filename:dirname(code:which(?MODULE)),
     Paths = lists:usort([Path1, Path2]),
@@ -839,27 +549,18 @@ add_code_path_to_node(Node, Module) ->
           end
       end, Paths).
 
-add_code_path_to_all_nodes(Config, Module) ->
-    Nodenames = get_node_configs(Config, nodename),
-    [ok = add_code_path_to_node(Nodename, Module)
+add_code_path_to_all_brokers(Config, Module) ->
+    Nodenames = get_node_configs(Config, rmq_nodename),
+    [ok = add_code_path_to_broker(Nodename, Module)
       || Nodename <- Nodenames],
     ok.
 
-rpc(Config, Node, Module, Function, Args)
-when is_atom(Node) andalso Node =/= undefined ->
-    rpc(Config, Node, Module, Function, Args, infinity);
-rpc(Config, I, Module, Function, Args)
-when is_integer(I) andalso I >= 0 ->
-    Node = get_node_config(Config, I, nodename),
-    rpc(Config, Node, Module, Function, Args);
-rpc(Config, Nodes, Module, Function, Args)
-when is_list(Nodes) ->
-    [rpc(Config, Node, Module, Function, Args) || Node <- Nodes].
+run_on_broker(Node, Module, Function, Args) ->
+    run_on_broker(Node, Module, Function, Args, infinity).
 
-rpc(_Config, Node, Module, Function, Args, Timeout)
-when is_atom(Node) andalso Node =/= undefined ->
+run_on_broker(Node, Module, Function, Args, Timeout) ->
     %% We add some directories to the broker node search path.
-    add_code_path_to_node(Node, Module),
+    add_code_path_to_broker(Node, Module),
     %% If there is an exception, rpc:call/{4,5} returns the exception as
     %% a "normal" return value. If there is an exit signal, we raise
     %% it again. In both cases, we have no idea of the module and line
@@ -872,74 +573,54 @@ when is_atom(Node) andalso Node =/= undefined ->
         {badrpc, {'EXIT', Reason}} -> exit(Reason);
         {badrpc, Reason}           -> exit(Reason);
         Ret                        -> Ret
-    end;
-rpc(Config, I, Module, Function, Args, Timeout)
-when is_integer(I) andalso I >= 0 ->
-    Node = get_node_config(Config, I, nodename),
-    rpc(Config, Node, Module, Function, Args, Timeout);
-rpc(Config, Nodes, Module, Function, Args, Timeout)
-when is_list(Nodes) ->
-    [rpc(Config, Node, Module, Function, Args, Timeout) || Node <- Nodes].
-
-rpc_all(Config, Module, Function, Args) ->
-    Nodes = get_node_configs(Config, nodename),
-    rpc(Config, Nodes, Module, Function, Args).
-
-rpc_all(Config, Module, Function, Args, Timeout) ->
-    Nodes = get_node_configs(Config, nodename),
-    rpc(Config, Nodes, Module, Function, Args, Timeout).
-
-%% Functions to start/restart/stop only the broker or the full Erlang
-%% node.
-
-start_node(Config, Node) ->
-    NodeConfig = get_node_config(Config, Node),
-    I = if
-        is_atom(Node) -> nodename_to_index(Config, Node);
-        true          -> Node
-    end,
-    case do_start_rabbitmq_node(Config, NodeConfig, I) of
-        {skip, _} = Error -> {error, Error};
-        _                 -> ok
     end.
 
-start_broker(Config, Node) ->
-    ok = rpc(Config, Node, rabbit, start, []).
+run_on_broker_i(Config, I, Module, Function, Args) ->
+    Node = get_node_config(Config, I, rmq_nodename),
+    run_on_broker(Node, Module, Function, Args).
 
-restart_broker(Config, Node) ->
-    ok = rpc(Config, Node, ?MODULE, do_restart_broker, []).
+run_on_broker_i(Config, I, Module, Function, Args, Timeout) ->
+    Node = get_node_config(Config, I, rmq_nodename),
+    run_on_broker(Node, Module, Function, Args, Timeout).
+
+run_on_all_brokers(Config, Module, Function, Args) ->
+    Nodes = get_node_configs(Config, rmq_nodename),
+    [run_on_broker(Node, Module, Function, Args) || Node <- Nodes].
+
+restart_broker(Nodename) ->
+    ok = rabbit_ct_broker_helpers:run_on_broker(Nodename,
+      ?MODULE, do_restart_broker, []).
+
+restart_broker_i(Config, I) ->
+    ok = rabbit_ct_broker_helpers:run_on_broker_i(Config, I,
+      ?MODULE, do_restart_broker, []).
 
 do_restart_broker() ->
-    ok = rabbit:stop(),
-    ok = rabbit:start().
+    rabbit:stop(),
+    rabbit:start().
 
-stop_broker(Config, Node) ->
-    ok = rpc(Config, Node, rabbit, stop, []).
+stop_broker(Nodename) ->
+    ok = rabbit_ct_broker_helpers:run_on_broker(Nodename,
+      rabbit, stop, []).
 
-restart_node(Config, Node) ->
-    ok = stop_node(Config, Node),
-    ok = start_node(Config, Node).
+stop_broker_i(Config, I) ->
+    ok = rabbit_ct_broker_helpers:run_on_broker_i(Config, I,
+      rabbit, stop, []).
 
-stop_node(Config, Node) ->
-    NodeConfig = get_node_config(Config, Node),
-    case stop_rabbitmq_node(Config, NodeConfig) of
-        {skip, _} = Error -> Error;
-        _                 -> ok
-    end.
+kill_broker(Nodename) ->
+    Pid = rabbit_ct_broker_helpers:run_on_broker(Nodename,
+      os, getpid, []),
+    do_kill_broker(Pid).
 
-stop_node_after(Config, Node, Sleep) ->
-    timer:sleep(Sleep),
-    stop_node(Config, Node).
+kill_broker_i(Config, I) ->
+    Pid = rabbit_ct_broker_helpers:run_on_broker_i(Config, I,
+      os, getpid, []),
+    do_kill_broker(Pid).
 
-kill_node(Config, Node) ->
-    Pid = rpc(Config, Node, os, getpid, []),
+do_kill_broker(Pid) ->
     %% FIXME maybe_flush_cover(Cfg),
     os:cmd("kill -9 " ++ Pid),
     await_os_pid_death(Pid).
-
-kill_node_after(Config, Node, Sleep) ->
-    timer:sleep(Sleep),
-    kill_node(Config, Node).
 
 await_os_pid_death(Pid) ->
     case rabbit_misc:is_os_process_alive(Pid) of
@@ -960,20 +641,7 @@ get_connection_pids(Connections) ->
       fun(Conn) ->
           ConnInfo = rabbit_networking:connection_info(Conn,
             [peer_host, peer_port]),
-          %% On at least Mac OS X, for a connection on localhost, the
-          %% client side of the connection gives its IPv4 address
-          %% (127.0.0.1), but the server side gives some kind of
-          %% non-standard IPv6 address (::ffff:7f00:1, not even the
-          %% standard ::1). So let's test for this alternate form too.
-          AltConnInfo = case proplists:get_value(peer_host, ConnInfo) of
-              {0, 0, 0, 0, 0, 16#ffff, 16#7f00, N} ->
-                  lists:keyreplace(peer_host, 1, ConnInfo,
-                      {peer_host, {127, 0, 0, N}});
-              _ ->
-                  ConnInfo
-          end,
-          lists:member(ConnInfo, ConnInfos) orelse
-          lists:member(AltConnInfo, ConnInfos)
+          lists:member(ConnInfo, ConnInfos)
       end, rabbit_networking:connections()).
 
 %% Return the PID of the given queue's supervisor.
@@ -994,94 +662,24 @@ get_queue_sup_pid([], _QueuePid) ->
 %% Policy helpers.
 %% -------------------------------------------------------------------
 
-set_policy(Config, Node, Name, Pattern, ApplyTo, Definition) ->
-    ok = rpc(Config, Node,
+set_policy(Config, I, Name, Pattern, ApplyTo, Definition) ->
+    ok = run_on_broker_i(Config, I,
       rabbit_policy, set, [<<"/">>, Name, Pattern, Definition, 0, ApplyTo]).
 
-clear_policy(Config, Node, Name) ->
-    rpc(Config, Node,
-        rabbit_policy, delete, [<<"/">>, Name]).
+clear_policy(Config, I, Name) ->
+    ok = run_on_broker_i(Config, I,
+      rabbit_policy, delete, [<<"/">>, Name]).
 
-set_operator_policy(Config, Node, Name, Pattern, ApplyTo, Definition) ->
-    ok = rpc(Config, Node,
-      rabbit_policy, set_op, [<<"/">>, Name, Pattern, Definition, 0, ApplyTo]).
+set_ha_policy(Config, I, Pattern, Policy) ->
+    set_ha_policy(Config, I, Pattern, Policy, []).
 
-clear_operator_policy(Config, Node, Name) ->
-    rpc(Config, Node,
-        rabbit_policy, delete_op, [<<"/">>, Name]).
-
-set_ha_policy(Config, Node, Pattern, Policy) ->
-    set_ha_policy(Config, Node, Pattern, Policy, []).
-
-set_ha_policy(Config, Node, Pattern, Policy, Extra) ->
-    set_policy(Config, Node, Pattern, Pattern, <<"queues">>,
+set_ha_policy(Config, I, Pattern, Policy, Extra) ->
+    set_policy(Config, I, Pattern, Pattern, <<"queues">>,
       ha_policy(Policy) ++ Extra).
 
 ha_policy(<<"all">>)      -> [{<<"ha-mode">>,   <<"all">>}];
 ha_policy({Mode, Params}) -> [{<<"ha-mode">>,   Mode},
                               {<<"ha-params">>, Params}].
-
-set_ha_policy_all(Config) ->
-    set_ha_policy(Config, 0, <<".*">>, <<"all">>),
-    Config.
-
-set_ha_policy_two_pos(Config) ->
-    Members = [
-      rabbit_misc:atom_to_binary(N)
-      || N <- get_node_configs(Config, nodename)],
-    TwoNodes = [M || M <- lists:sublist(Members, 2)],
-    set_ha_policy(Config, 0, <<"^ha.two.">>, {<<"nodes">>, TwoNodes},
-                  [{<<"ha-promote-on-shutdown">>, <<"always">>}]),
-    set_ha_policy(Config, 0, <<"^ha.auto.">>, {<<"nodes">>, TwoNodes},
-                  [{<<"ha-sync-mode">>,           <<"automatic">>},
-                   {<<"ha-promote-on-shutdown">>, <<"always">>}]),
-    Config.
-
-set_ha_policy_two_pos_batch_sync(Config) ->
-    Members = [
-      rabbit_misc:atom_to_binary(N)
-      || N <- get_node_configs(Config, nodename)],
-    TwoNodes = [M || M <- lists:sublist(Members, 2)],
-    set_ha_policy(Config, 0, <<"^ha.two.">>, {<<"nodes">>, TwoNodes},
-                  [{<<"ha-promote-on-shutdown">>, <<"always">>}]),
-    set_ha_policy(Config, 0, <<"^ha.auto.">>, {<<"nodes">>, TwoNodes},
-                  [{<<"ha-sync-mode">>,           <<"automatic">>},
-                   {<<"ha-sync-batch-size">>,     200},
-                   {<<"ha-promote-on-shutdown">>, <<"always">>}]),
-    Config.
-
-%% -------------------------------------------------------------------
-%% Parameter helpers.
-%% -------------------------------------------------------------------
-
-set_parameter(Config, Node, Component, Name, Value) ->
-    ok = rpc(Config, Node,
-      rabbit_runtime_parameters, set, [<<"/">>, Component, Name, Value, none]).
-
-clear_parameter(Config, Node, Component, Name) ->
-    ok = rpc(Config, Node,
-      rabbit_runtime_parameters, clear, [<<"/">>, Component, Name]).
-
-%% -------------------------------------------------------------------
-%% Parameter helpers.
-%% -------------------------------------------------------------------
-
-enable_plugin(Config, Node, Plugin) ->
-    plugin_action(Config, Node, enable, [Plugin], []).
-
-disable_plugin(Config, Node, Plugin) ->
-    plugin_action(Config, Node, disable, [Plugin], []).
-
-plugin_action(Config, Node, Command, Args, Opts) ->
-    PluginsFile = rabbit_ct_broker_helpers:get_node_config(Config, Node,
-      enabled_plugins_file),
-    PluginsDir = rabbit_ct_broker_helpers:get_node_config(Config, Node,
-      plugins_dir),
-    Nodename = rabbit_ct_broker_helpers:get_node_config(Config, Node,
-      nodename),
-    rabbit_ct_broker_helpers:rpc(Config, Node,
-      rabbit_plugins_main, action,
-      [Command, Nodename, Args, Opts, PluginsFile, PluginsDir]).
 
 %% -------------------------------------------------------------------
 

@@ -19,6 +19,8 @@
          stop_applications/1, stop_applications/2, app_dependency_order/2,
          app_dependencies/1]).
 
+-ifdef(use_specs).
+
 -type error_handler() :: fun((atom(), any()) -> 'ok').
 
 -spec load_applications([atom()])                   -> 'ok'.
@@ -28,6 +30,8 @@
 -spec stop_applications([atom()], error_handler())  -> 'ok'.
 -spec app_dependency_order([atom()], boolean())     -> [digraph:vertex()].
 -spec app_dependencies(atom())                      -> [atom()].
+
+-endif.
 
 %%---------------------------------------------------------------------------
 %% Public API

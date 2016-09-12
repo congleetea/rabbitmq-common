@@ -25,6 +25,8 @@
 
 -export([added_to_rabbit_registry/2, removed_from_rabbit_registry/1]).
 
+-ifdef(use_specs).
+
 -type(method_name() :: rabbit_framing:amqp_method_name()).
 -type(original_method() :: rabbit_framing:amqp_method_record()).
 -type(processed_method() :: rabbit_framing:amqp_method_record()).
@@ -42,9 +44,20 @@
     rabbit_misc:channel_or_connection_exit().
 -callback applies_to() -> list(method_name()).
 
-added_to_rabbit_registry(_Type, _ModuleName) ->
+-else.
+
+-export([behaviour_info/1]).
+
+behaviour_info(callbacks) ->
+    [{description, 0}, {init, 1}, {intercept, 3}, {applies_to, 0}];
+behaviour_info(_Other) ->
+    undefined.
+
+-endif.
+
+added_to_rabbit_registry(_Type, _ModuleName) -> 
     rabbit_channel:refresh_interceptors().
-removed_from_rabbit_registry(_Type) ->
+removed_from_rabbit_registry(_Type) -> 
     rabbit_channel:refresh_interceptors().
 
 init(Ch) ->
